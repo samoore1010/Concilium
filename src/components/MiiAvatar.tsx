@@ -61,6 +61,12 @@ export function MiiAvatar({ persona, size = 120, reaction = "neutral", showReact
         setMouthShape("open");
         setBreathaClass("animate-breathe");
         break;
+      case "speaking":
+        setAnimClass("");
+        setBodyAnimClass("animate-lean-forward");
+        setMouthShape("open");
+        setBreathaClass("animate-breathe-fast");
+        break;
       default:
         setAnimClass("");
         setBodyAnimClass("");
@@ -166,6 +172,14 @@ export function MiiAvatar({ persona, size = 120, reaction = "neutral", showReact
   };
 
   const renderMouth = () => {
+    if (reaction === "speaking") {
+      // Animated speaking mouth
+      return (
+        <g className="animate-speaking-mouth" style={{ transformOrigin: `${cx}px ${mouthY + 2}px` }}>
+          <ellipse cx={cx} cy={mouthY + 2} rx={5} ry={4} fill="#333" />
+        </g>
+      );
+    }
     switch (mouthShape) {
       case "smile":
         return <path d={`M${cx - 8},${mouthY} Q${cx},${mouthY + 8} ${cx + 8},${mouthY}`} stroke="#333" strokeWidth={2} fill="none" />;
@@ -184,6 +198,7 @@ export function MiiAvatar({ persona, size = 120, reaction = "neutral", showReact
 
     switch (reaction) {
       case "raised-hand":
+      case "speaking":
         // Right arm raised
         return (
           <>

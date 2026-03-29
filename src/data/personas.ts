@@ -2,7 +2,7 @@ export type AgeGroup = "young-adult" | "middle-aged" | "senior";
 export type PoliticalLeaning = "progressive" | "moderate" | "conservative";
 export type Profession = "tech" | "legal" | "finance" | "education" | "healthcare" | "trades";
 export type CommunicationStyle = "analytical" | "emotional" | "skeptical" | "supportive" | "blunt";
-export type ReactionType = "nod" | "shake" | "think" | "smile" | "frown" | "raised-hand" | "neutral";
+export type ReactionType = "nod" | "shake" | "think" | "smile" | "frown" | "raised-hand" | "speaking" | "neutral";
 
 export interface Persona {
   id: string;

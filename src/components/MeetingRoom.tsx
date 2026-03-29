@@ -1,10 +1,16 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Persona, ReactionType } from "../data/personas";
-import { generateLiveReaction, ReactionEvent, generateSessionFeedback, FeedbackItem, shouldRaiseHand, HandRaiseEvent } from "../data/feedbackEngine";
+import { generateLiveReaction, generateSessionFeedback, FeedbackItem, shouldRaiseHand, HandRaiseEvent } from "../data/feedbackEngine";
+import { getTheme } from "../data/themes";
+import { getVoiceConfig } from "../data/voiceConfig";
 import { AudienceTile } from "./AudienceTile";
+import { ThemedBackground } from "./ThemedBackground";
+import { ThemedLayout } from "./ThemedLayout";
+import { QuestionQueue, QueuedQuestion, handRaiseToQueuedQuestion } from "./QuestionQueue";
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 import { useCamera } from "../hooks/useCamera";
-import { useSpeechMetrics, SpeechMetrics } from "../hooks/useSpeechMetrics";
+import { useSpeechMetrics } from "../hooks/useSpeechMetrics";
+import { useTTS } from "../hooks/useTTS";
 import { addSession, SessionRecord } from "../data/sessionHistory";
 
 interface MeetingRoomProps {
@@ -20,6 +26,8 @@ interface PersonaState {
   lastHandRaiseAt?: number;
 }
 
+type SideTab = "chat" | "coach" | "questions";
+
 export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: MeetingRoomProps) {
   const [inputText, setInputText] = useState("");
   const [transcript, setTranscript] = useState<string[]>([]);
@@ -27,15 +35,35 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
   const [elapsed, setElapsed] = useState(0);
   const [chatMessages, setChatMessages] = useState<{ from: string; text: string; time: number }[]>([]);
   const [messageCount, setMessageCount] = useState(0);
-  const [handRaises, setHandRaises] = useState<HandRaiseEvent[]>([]);
-  const [coachOpen, setCoachOpen] = useState(false);
+  const [questionQueue, setQuestionQueue] = useState<QueuedQuestion[]>([]);
+  const [speakingPersonaId, setSpeakingPersonaId] = useState<string | null>(null);
+  const [ttsEnabled, setTtsEnabled] = useState(true);
+  const [sideTab, setSideTab] = useState<SideTab>("chat");
   const chatEndRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
-  // Hooks for camera and speech
+  const theme = getTheme(sessionType);
+
+  // Hooks
   const { videoRef, isActive: isCameraActive, startCamera, stopCamera } = useCamera();
   const { transcript: speechTranscript, isListening, startListening, stopListening } = useSpeechRecognition();
   const { metrics: speechMetrics, updateMetrics } = useSpeechMetrics();
+  const { speak, stop: stopTTS, isSpeaking } = useTTS();
+
+  // Clear speaking persona when TTS finishes
+  useEffect(() => {
+    if (!isSpeaking && speakingPersonaId) {
+      // Delay slightly so the speaking animation is visible
+      const timer = setTimeout(() => {
+        setPersonaStates((prev) => ({
+          ...prev,
+          [speakingPersonaId]: { ...prev[speakingPersonaId], reaction: "neutral" },
+        }));
+        setSpeakingPersonaId(null);
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [isSpeaking, speakingPersonaId]);
 
   // Auto-send speech transcript
   useEffect(() => {
@@ -59,24 +87,23 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
   useEffect(() => {
     const interval = setInterval(() => {
       const randomPersona = personas[Math.floor(Math.random() * personas.length)];
-      if (Math.random() > 0.6) {
+      if (Math.random() > 0.6 && speakingPersonaId !== randomPersona.id) {
         const ambient: ReactionType[] = ["think", "neutral", "nod"];
         const type = ambient[Math.floor(Math.random() * ambient.length)];
         setPersonaStates((prev) => ({
           ...prev,
-          [randomPersona.id]: { reaction: type },
+          [randomPersona.id]: { ...prev[randomPersona.id], reaction: type },
         }));
-        // Reset after a bit
         setTimeout(() => {
           setPersonaStates((prev) => ({
             ...prev,
-            [randomPersona.id]: { reaction: "neutral" },
+            [randomPersona.id]: { ...prev[randomPersona.id], reaction: "neutral" },
           }));
         }, 2000);
       }
     }, 3000);
     return () => clearInterval(interval);
-  }, [personas]);
+  }, [personas, speakingPersonaId]);
 
   const handleSendMessage = useCallback(() => {
     if (!inputText.trim()) return;
@@ -84,15 +111,11 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
     const text = inputText.trim();
     setTranscript((prev) => [...prev, text]);
     setChatMessages((prev) => [...prev, { from: "You", text, time: elapsed }]);
-
-    // Update speech metrics
     updateMetrics(text);
-
     setInputText("");
     const newMessageCount = messageCount + 1;
     setMessageCount(newMessageCount);
 
-    // Generate reactions from each persona
     personas.forEach((persona) => {
       const delay = 500 + Math.random() * 2000;
       setTimeout(() => {
@@ -103,20 +126,18 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
             [persona.id]: { reaction: reactionEvent.type, emoji: reactionEvent.emoji, lastHandRaiseAt: prev[persona.id]?.lastHandRaiseAt },
           }));
 
-          // Some personas might "chat" a short response
           if (Math.random() > 0.65) {
-            const quickResponses = getQuickResponse(persona, text);
-            if (quickResponses) {
+            const quickResponse = getQuickResponse(persona);
+            if (quickResponse) {
               setTimeout(() => {
                 setChatMessages((prev) => [
                   ...prev,
-                  { from: persona.name, text: quickResponses, time: elapsed },
+                  { from: persona.name, text: quickResponse, time: elapsed },
                 ]);
               }, 1000 + Math.random() * 1500);
             }
           }
 
-          // Reset reaction
           setTimeout(() => {
             setPersonaStates((prev) => ({
               ...prev,
@@ -125,36 +146,84 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
           }, 2500);
         }
 
-        // Check for hand-raise with cooldown
+        // Hand-raise check
         const now = Date.now();
         const lastRaise = personaStates[persona.id]?.lastHandRaiseAt || 0;
         if (now - lastRaise > 5000) {
           const raiseEvent = shouldRaiseHand(persona, text, newMessageCount);
           if (raiseEvent) {
-            setHandRaises((prev) => [...prev, raiseEvent]);
+            const queued = handRaiseToQueuedQuestion(raiseEvent);
+            setQuestionQueue((prev) => [...prev, queued]);
             setPersonaStates((prev) => ({
               ...prev,
-              [persona.id]: { ...prev[persona.id], lastHandRaiseAt: now },
+              [persona.id]: { ...prev[persona.id], reaction: "raised-hand", lastHandRaiseAt: now },
             }));
+            // Reset raised-hand after a bit (they're now in the queue)
+            setTimeout(() => {
+              setPersonaStates((prev) => ({
+                ...prev,
+                [persona.id]: { ...prev[persona.id], reaction: "neutral" },
+              }));
+            }, 3000);
           }
         }
       }, delay);
     });
   }, [inputText, personas, elapsed, messageCount, personaStates, updateMetrics]);
 
+  const handleListenToQuestion = (question: QueuedQuestion) => {
+    const voiceConfig = getVoiceConfig(question.personaId);
+    const persona = personas.find((p) => p.id === question.personaId);
+
+    // Set speaking state
+    setSpeakingPersonaId(question.personaId);
+    setPersonaStates((prev) => ({
+      ...prev,
+      [question.personaId]: { ...prev[question.personaId], reaction: "speaking" },
+    }));
+
+    // Add to chat
+    if (persona) {
+      setChatMessages((prev) => [
+        ...prev,
+        { from: persona.name, text: question.question, time: elapsed },
+      ]);
+    }
+
+    // Speak
+    speak(question.question, voiceConfig);
+
+    // Remove from queue
+    setQuestionQueue((prev) => prev.filter((q) => q.id !== question.id));
+  };
+
+  const handleReadQuestion = (question: QueuedQuestion) => {
+    const persona = personas.find((p) => p.id === question.personaId);
+    if (persona) {
+      setChatMessages((prev) => [
+        ...prev,
+        { from: persona.name, text: question.question, time: elapsed },
+      ]);
+    }
+    setQuestionQueue((prev) => prev.filter((q) => q.id !== question.id));
+    setSideTab("chat");
+  };
+
+  const handleDismissQuestion = (questionId: string) => {
+    setQuestionQueue((prev) => prev.filter((q) => q.id !== questionId));
+  };
+
   const handleEndSession = () => {
     clearInterval(timerRef.current);
     stopCamera();
     stopListening();
+    stopTTS();
     const fullTranscript = transcript.join(" ");
     const feedback = personas.map((p) => generateSessionFeedback(p, fullTranscript));
 
-    // Save session to history
     const avgScore = feedback.reduce((sum, f) => sum + f.overallScore, 0) / feedback.length;
     const perPersonaScores: Record<string, number> = {};
-    feedback.forEach((f) => {
-      perPersonaScores[f.personaId] = f.overallScore;
-    });
+    feedback.forEach((f) => { perPersonaScores[f.personaId] = f.overallScore; });
 
     const session: SessionRecord = {
       id: Date.now().toString(),
@@ -173,244 +242,196 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
       },
     };
     addSession(session);
-
     onEndSession(feedback, fullTranscript);
   };
 
-  const formatTime = (s: number) => `${Math.floor(s / 60).toString().padStart(2, "0")}:${(s % 60).toString().padStart(2, "0")}`;
+  const formatTime = (s: number) =>
+    `${Math.floor(s / 60).toString().padStart(2, "0")}:${(s % 60).toString().padStart(2, "0")}`;
 
-  const sessionLabel: Record<string, string> = {
-    "business-pitch": "Business Pitch Session",
-    "mock-trial": "Mock Trial Session",
-    "public-speaking": "Public Speaking Session",
-    "sales-demo": "Sales Demo Session",
-  };
-
-  // Grid layout based on total tiles (personas + self-view)
-  const totalTiles = personas.length + 1;
-  const gridClass =
-    totalTiles <= 2
-      ? "grid-cols-2"
-      : totalTiles <= 4
-      ? "grid-cols-2"
-      : totalTiles <= 6
-      ? "grid-cols-3"
-      : "grid-cols-4";
-
-  const handleCallOn = (handRaise: HandRaiseEvent) => {
-    const persona = personas.find((p) => p.id === handRaise.personaId);
-    if (persona) {
-      setChatMessages((prev) => [
-        ...prev,
-        { from: persona.name, text: handRaise.question, time: elapsed },
-      ]);
-      setPersonaStates((prev) => ({
-        ...prev,
-        [persona.id]: { reaction: "raised-hand", emoji: "✋" },
-      }));
-      setHandRaises((prev) => prev.filter((hr) => hr.personaId !== handRaise.personaId));
-      setTimeout(() => {
-        setPersonaStates((prev) => ({
-          ...prev,
-          [persona.id]: { reaction: "neutral", emoji: undefined },
-        }));
-      }, 2500);
-    }
-  };
-
-  const handleDismiss = (personaId: string) => {
-    setHandRaises((prev) => prev.filter((hr) => hr.personaId !== personaId));
-  };
-
-  return (
-    <div className="h-screen flex flex-col meeting-bg text-white">
-      {/* Hand-raise notifications */}
-      {handRaises.length > 0 && (
-        <div className="bg-blue-600 text-white px-4 py-2 flex items-center justify-between animate-fade-in">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium">
-              {personas.find((p) => p.id === handRaises[0].personaId)?.name} wants to ask a question
-            </span>
-          </div>
-          <div className="flex gap-2">
-            <button
-              onClick={() => handleCallOn(handRaises[0])}
-              className="px-3 py-1 bg-white/20 hover:bg-white/30 rounded text-xs font-medium transition-colors"
-            >
-              Call On
-            </button>
-            <button
-              onClick={() => handleDismiss(handRaises[0].personaId)}
-              className="px-3 py-1 bg-white/10 hover:bg-white/20 rounded text-xs font-medium transition-colors"
-            >
-              Dismiss
-            </button>
-          </div>
+  // Self-view tile
+  const selfViewTile = (
+    <div className="frosted-glass rounded-lg flex flex-col items-center justify-end overflow-hidden relative h-full">
+      {isCameraActive ? (
+        <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover mirror" />
+      ) : (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="text-white/20 text-sm">Camera Off</div>
         </div>
       )}
-
-      {/* Top bar */}
-      <div className="flex items-center justify-between px-4 py-2 bg-black/30 border-b border-white/5">
-        <div className="flex items-center gap-3">
-          <div className="w-2.5 h-2.5 rounded-full bg-green-400 animate-pulse" />
-          <span className="text-sm font-medium">{sessionLabel[sessionType] || "Practice Session"}</span>
-          <span className="text-xs text-white/40 font-mono">{formatTime(elapsed)}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-white/40">{personas.length} audience members</span>
-          <button onClick={onBack} className="text-xs text-white/40 hover:text-white/70 px-2 py-1">
-            Back
-          </button>
-          <button
-            onClick={handleEndSession}
-            className="px-4 py-1.5 bg-red-500 hover:bg-red-600 rounded text-sm font-medium transition-colors"
-          >
-            End Session
-          </button>
-        </div>
+      <div className="relative z-10 w-full px-3 py-2 bg-black/50 flex items-center justify-between">
+        <span className="text-xs font-medium text-white">You</span>
+        {isCameraActive && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-300">Live</span>
+        )}
       </div>
+    </div>
+  );
 
-      {/* Main content */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Audience grid */}
-        <div className="flex-1 p-4">
-          <div className={`grid ${gridClass} gap-3 h-full`}>
-            {/* User's self-view tile */}
-            <div className="frosted-glass rounded-lg flex flex-col items-center justify-end overflow-hidden relative">
-              {isCameraActive ? (
-                <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover mirror" />
-              ) : (
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="text-white/20 text-sm">Camera Off</div>
-                </div>
-              )}
-              <div className="relative z-10 w-full px-3 py-2 bg-black/50 flex items-center justify-between">
-                <span className="text-xs font-medium text-white">You</span>
-                {isCameraActive && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-300">Live</span>
-                )}
-              </div>
-            </div>
+  // Audience tiles
+  const audienceTiles = personas.map((persona) => {
+    const state = personaStates[persona.id] || { reaction: "neutral" as ReactionType };
+    return (
+      <AudienceTile
+        key={persona.id}
+        persona={persona}
+        reaction={state.reaction}
+        reactionEmoji={state.emoji}
+        isSpeaking={speakingPersonaId === persona.id}
+      />
+    );
+  });
 
-            {personas.map((persona) => {
-              const state = personaStates[persona.id] || { reaction: "neutral" as ReactionType };
-              return (
-                <AudienceTile
-                  key={persona.id}
-                  persona={persona}
-                  reaction={state.reaction}
-                  reactionEmoji={state.emoji}
-                />
-              );
-            })}
+  return (
+    <div className="h-screen flex flex-col text-white relative overflow-hidden">
+      {/* Themed background */}
+      <ThemedBackground theme={theme} />
+
+      {/* Content layer */}
+      <div className="relative z-10 flex flex-col h-full">
+        {/* Top bar */}
+        <div className={`flex items-center justify-between px-4 py-2 bg-gradient-to-b ${theme.topBarAccent} border-b border-white/5`}>
+          <div className="flex items-center gap-3">
+            <div className="w-2.5 h-2.5 rounded-full animate-pulse" style={{ backgroundColor: theme.accentColor }} />
+            <span className="text-sm font-medium">{theme.label} Session</span>
+            <span className="text-xs text-white/40 font-mono">{formatTime(elapsed)}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-white/40">{personas.length} audience members</span>
+            <button onClick={onBack} className="text-xs text-white/40 hover:text-white/70 px-2 py-1">
+              Back
+            </button>
+            <button
+              onClick={handleEndSession}
+              className="px-4 py-1.5 bg-red-500 hover:bg-red-600 rounded text-sm font-medium transition-colors"
+            >
+              End Session
+            </button>
           </div>
         </div>
 
-        {/* Side panel — Chat / Coach */}
-        <div className="w-72 border-l border-white/5 flex flex-col bg-black/20">
-          {/* Toggle tabs */}
-          <div className="flex border-b border-white/5">
-            <button
-              onClick={() => setCoachOpen(false)}
-              className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${
-                !coachOpen ? "text-white bg-white/10" : "text-white/50 hover:text-white/70"
-              }`}
-            >
-              Chat
-            </button>
-            <button
-              onClick={() => setCoachOpen(true)}
-              className={`flex-1 px-3 py-2 text-xs font-medium transition-colors ${
-                coachOpen ? "text-white bg-white/10" : "text-white/50 hover:text-white/70"
-              }`}
-            >
-              Coach
-            </button>
+        {/* Main content */}
+        <div className="flex-1 flex overflow-hidden">
+          {/* Audience area */}
+          <div className="flex-1 p-4">
+            <ThemedLayout theme={theme} selfViewTile={selfViewTile}>
+              {audienceTiles}
+            </ThemedLayout>
           </div>
 
-          {coachOpen ? (
-            // Coach panel
-            <div className="flex-1 overflow-y-auto px-3 py-3 space-y-4 text-xs">
-              <div>
-                <div className="text-white/50 mb-1">Words Per Minute</div>
-                <div className="text-lg font-bold text-blue-400">{speechMetrics.wordsPerMinute}</div>
-                <div className="w-full h-1.5 rounded-full bg-white/10 mt-1 overflow-hidden">
-                  <div className="h-full bg-blue-400" style={{ width: `${Math.min(100, (speechMetrics.wordsPerMinute / 150) * 100)}%` }} />
-                </div>
-              </div>
-
-              <div>
-                <div className="text-white/50 mb-1">Filler Words</div>
-                <div className="text-lg font-bold text-orange-400">{speechMetrics.fillerWordCount}</div>
-                <div className="text-white/40 text-[10px] mt-1">{speechMetrics.fillerWordCount > 5 ? "Reduce' usage" : "Good"}</div>
-              </div>
-
-              <div>
-                <div className="text-white/50 mb-1">Vocabulary Variety</div>
-                <div className="text-lg font-bold text-emerald-400">{speechMetrics.vocabularyScore}</div>
-                <div className="w-full h-1.5 rounded-full bg-white/10 mt-1 overflow-hidden">
-                  <div className="h-full bg-emerald-400" style={{ width: `${speechMetrics.vocabularyScore}%` }} />
-                </div>
-              </div>
-
-              <div>
-                <div className="text-white/50 mb-1">Longest Pause</div>
-                <div className="text-lg font-bold text-yellow-400">{speechMetrics.longestPause.toFixed(1)}s</div>
-                <div className="text-white/40 text-[10px] mt-1">{speechMetrics.longestPause > 3 ? "Take more pauses" : "Steady pace"}</div>
-              </div>
-            </div>
-          ) : (
-            // Chat panel
-            <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2">
-              {chatMessages.length === 0 && (
-                <p className="text-xs text-white/20 text-center mt-8">
-                  Start speaking to see audience reactions...
-                </p>
-              )}
-              {chatMessages.map((msg, i) => (
-                <div key={i} className={`text-xs ${msg.from === "You" ? "text-blue-300" : "text-white/70"}`}>
-                  <span className="font-medium">{msg.from}:</span>{" "}
-                  <span className="text-white/50">{msg.text}</span>
-                </div>
+          {/* Side panel — Chat / Coach / Questions */}
+          <div className="w-72 border-l border-white/5 flex flex-col bg-black/20">
+            {/* Toggle tabs */}
+            <div className="flex border-b border-white/5">
+              {(["chat", "coach", "questions"] as SideTab[]).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setSideTab(tab)}
+                  className={`flex-1 px-2 py-2 text-xs font-medium transition-colors relative ${
+                    sideTab === tab ? "text-white bg-white/10" : "text-white/50 hover:text-white/70"
+                  }`}
+                >
+                  {tab === "questions" ? "Q&A" : tab.charAt(0).toUpperCase() + tab.slice(1)}
+                  {tab === "questions" && questionQueue.length > 0 && (
+                    <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-red-500 text-[9px] flex items-center justify-center font-bold">
+                      {questionQueue.length}
+                    </span>
+                  )}
+                </button>
               ))}
-              <div ref={chatEndRef} />
             </div>
-          )}
-        </div>
-      </div>
 
-      {/* Bottom bar — input area */}
-      <div className="border-t border-white/5 bg-black/30 px-4 py-3">
-        <div className="max-w-3xl mx-auto flex gap-2">
-          <div className="flex items-center gap-2 mr-2">
-            <ToolbarButton
-              icon="mic"
-              label="Mic"
-              isActive={isListening}
-              onClick={() => (isListening ? stopListening() : startListening())}
-            />
-            <ToolbarButton
-              icon="video"
-              label="Video"
-              isActive={isCameraActive}
-              onClick={() => (isCameraActive ? stopCamera() : startCamera())}
-            />
-            <ToolbarButton icon="screen" label="Share" />
+            {sideTab === "coach" ? (
+              <div className="flex-1 overflow-y-auto px-3 py-3 space-y-4 text-xs">
+                <div>
+                  <div className="text-white/50 mb-1">Words Per Minute</div>
+                  <div className="text-lg font-bold text-blue-400">{speechMetrics.wordsPerMinute}</div>
+                  <div className="w-full h-1.5 rounded-full bg-white/10 mt-1 overflow-hidden">
+                    <div className="h-full bg-blue-400" style={{ width: `${Math.min(100, (speechMetrics.wordsPerMinute / 150) * 100)}%` }} />
+                  </div>
+                </div>
+                <div>
+                  <div className="text-white/50 mb-1">Filler Words</div>
+                  <div className="text-lg font-bold text-orange-400">{speechMetrics.fillerWordCount}</div>
+                  <div className="text-white/40 text-[10px] mt-1">{speechMetrics.fillerWordCount > 5 ? "Try to reduce usage" : "Good"}</div>
+                </div>
+                <div>
+                  <div className="text-white/50 mb-1">Vocabulary Variety</div>
+                  <div className="text-lg font-bold text-emerald-400">{speechMetrics.vocabularyScore}</div>
+                  <div className="w-full h-1.5 rounded-full bg-white/10 mt-1 overflow-hidden">
+                    <div className="h-full bg-emerald-400" style={{ width: `${speechMetrics.vocabularyScore}%` }} />
+                  </div>
+                </div>
+                <div>
+                  <div className="text-white/50 mb-1">Longest Pause</div>
+                  <div className="text-lg font-bold text-yellow-400">{speechMetrics.longestPause.toFixed(1)}s</div>
+                  <div className="text-white/40 text-[10px] mt-1">{speechMetrics.longestPause > 3 ? "Take more pauses" : "Steady pace"}</div>
+                </div>
+              </div>
+            ) : sideTab === "questions" ? (
+              <QuestionQueue
+                questions={questionQueue}
+                personas={personas}
+                speakingPersonaId={speakingPersonaId}
+                ttsEnabled={ttsEnabled}
+                onListen={handleListenToQuestion}
+                onRead={handleReadQuestion}
+                onDismiss={handleDismissQuestion}
+                onToggleTTS={() => setTtsEnabled(!ttsEnabled)}
+              />
+            ) : (
+              <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2">
+                {chatMessages.length === 0 && (
+                  <p className="text-xs text-white/20 text-center mt-8">
+                    Start speaking to see audience reactions...
+                  </p>
+                )}
+                {chatMessages.map((msg, i) => (
+                  <div key={i} className={`text-xs ${msg.from === "You" ? "text-blue-300" : "text-white/70"}`}>
+                    <span className="font-medium">{msg.from}:</span>{" "}
+                    <span className="text-white/50">{msg.text}</span>
+                  </div>
+                ))}
+                <div ref={chatEndRef} />
+              </div>
+            )}
           </div>
-          <input
-            value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-            placeholder="Type your presentation text here (or use mic)..."
-            className="flex-1 bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm text-white placeholder-white/30 outline-none focus:border-blue-400/50 transition-colors"
-          />
-          <button
-            onClick={handleSendMessage}
-            disabled={!inputText.trim()}
-            className="px-4 py-2 bg-blue-500 hover:bg-blue-600 disabled:opacity-30 rounded-lg text-sm font-medium transition-colors"
-          >
-            Send
-          </button>
+        </div>
+
+        {/* Bottom bar */}
+        <div className="border-t border-white/5 bg-black/40 px-4 py-3">
+          <div className="max-w-3xl mx-auto flex gap-2">
+            <div className="flex items-center gap-2 mr-2">
+              <ToolbarButton
+                icon="mic"
+                label="Mic"
+                isActive={isListening}
+                accentColor={theme.accentColor}
+                onClick={() => (isListening ? stopListening() : startListening())}
+              />
+              <ToolbarButton
+                icon="video"
+                label="Video"
+                isActive={isCameraActive}
+                accentColor={theme.accentColor}
+                onClick={() => (isCameraActive ? stopCamera() : startCamera())}
+              />
+              <ToolbarButton icon="screen" label="Share" accentColor={theme.accentColor} />
+            </div>
+            <input
+              value={inputText}
+              onChange={(e) => setInputText(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
+              placeholder="Type your presentation text here (or use mic)..."
+              className="flex-1 bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm text-white placeholder-white/30 outline-none focus:border-blue-400/50 transition-colors"
+            />
+            <button
+              onClick={handleSendMessage}
+              disabled={!inputText.trim()}
+              className="px-4 py-2 bg-blue-500 hover:bg-blue-600 disabled:opacity-30 rounded-lg text-sm font-medium transition-colors"
+            >
+              Send
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -421,11 +442,13 @@ function ToolbarButton({
   icon,
   label,
   isActive,
+  accentColor,
   onClick,
 }: {
   icon: string;
   label: string;
   isActive?: boolean;
+  accentColor?: string;
   onClick?: () => void;
 }) {
   const icons: Record<string, React.ReactElement> = {
@@ -453,9 +476,10 @@ function ToolbarButton({
       onClick={onClick}
       className={`w-9 h-9 flex items-center justify-center rounded-full transition-colors ${
         isActive
-          ? "bg-blue-500 text-white"
+          ? "text-white"
           : "bg-white/5 hover:bg-white/10 text-white/50 hover:text-white/80"
       }`}
+      style={isActive ? { backgroundColor: accentColor || "#3b82f6" } : undefined}
       title={label}
     >
       {icons[icon]}
@@ -463,43 +487,15 @@ function ToolbarButton({
   );
 }
 
-function getQuickResponse(persona: Persona, userText: string): string | null {
-  const lower = userText.toLowerCase();
+function getQuickResponse(persona: Persona): string | null {
   const style = persona.communicationStyle;
-
   const responses: Record<string, string[]> = {
-    analytical: [
-      "What's the data behind that claim?",
-      "Can you quantify that impact?",
-      "Interesting — do you have a case study?",
-      "What's the sample size here?",
-    ],
-    emotional: [
-      "I love the vision here!",
-      "How does this help everyday people?",
-      "Tell me more about the human side of this.",
-      "Who benefits most from this?",
-    ],
-    skeptical: [
-      "I've heard this before. What's different?",
-      "What about the risks?",
-      "Sounds optimistic. What could go wrong?",
-      "Who else has tried this?",
-    ],
-    supportive: [
-      "I appreciate the honesty there.",
-      "That's a thoughtful approach.",
-      "Good point — keep going.",
-      "I can see the potential here.",
-    ],
-    blunt: [
-      "Get to the point — what do you need?",
-      "How much does it cost?",
-      "What's the bottom line?",
-      "Skip the fluff. What's the ask?",
-    ],
+    analytical: ["What's the data behind that claim?", "Can you quantify that impact?", "Interesting — do you have a case study?", "What's the sample size here?"],
+    emotional: ["I love the vision here!", "How does this help everyday people?", "Tell me more about the human side of this.", "Who benefits most from this?"],
+    skeptical: ["I've heard this before. What's different?", "What about the risks?", "Sounds optimistic. What could go wrong?", "Who else has tried this?"],
+    supportive: ["I appreciate the honesty there.", "That's a thoughtful approach.", "Good point — keep going.", "I can see the potential here."],
+    blunt: ["Get to the point — what do you need?", "How much does it cost?", "What's the bottom line?", "Skip the fluff. What's the ask?"],
   };
-
   const pool = responses[style] || responses.analytical;
   return pool[Math.floor(Math.random() * pool.length)];
 }
