@@ -3,6 +3,7 @@ import cors from "cors";
 import path from "path";
 import { fileURLToPath } from "url";
 import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import { getPersonaPrompt, buildReactionPrompt, buildFeedbackPrompt } from "./personaPrompts.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -15,7 +16,7 @@ app.use(express.json());
 // Serve static files from dist/
 app.use(express.static(path.join(__dirname, "../dist")));
 
-// Lazy-init Anthropic client (only when API key is available)
+// Lazy-init Anthropic client
 let anthropic: Anthropic | null = null;
 function getClient(): Anthropic | null {
   if (!process.env.ANTHROPIC_API_KEY) return null;
@@ -25,6 +26,26 @@ function getClient(): Anthropic | null {
   return anthropic;
 }
 
+// Lazy-init OpenAI client (for TTS)
+let openai: OpenAI | null = null;
+function getOpenAI(): OpenAI | null {
+  if (!process.env.OPENAI_API_KEY) return null;
+  if (!openai) {
+    openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  }
+  return openai;
+}
+
+// OpenAI TTS voice mapping per persona
+const PERSONA_VOICES: Record<string, string> = {
+  "maria-chen": "nova",       // warm, professional female
+  "james-wilson": "onyx",     // deep, authoritative male
+  "aisha-johnson": "shimmer", // clear, confident female
+  "carlos-reyes": "echo",     // warm, energetic male
+  "patricia-omalley": "fable",// warm, gentle (British-tinged)
+  "dev-patel": "alloy",       // neutral, direct male
+};
+
 // === API Routes ===
 
 // Health check
@@ -32,7 +53,45 @@ app.get("/api/health", (_req, res) => {
   res.json({
     status: "ok",
     llmAvailable: !!process.env.ANTHROPIC_API_KEY,
+    ttsAvailable: !!process.env.OPENAI_API_KEY,
   });
+});
+
+// Text-to-Speech via OpenAI
+app.post("/api/tts", async (req, res) => {
+  const client = getOpenAI();
+  if (!client) {
+    return res.status(503).json({ error: "TTS not configured. Set OPENAI_API_KEY." });
+  }
+
+  const { text, personaId, speed } = req.body;
+  if (!text) {
+    return res.status(400).json({ error: "text required" });
+  }
+
+  try {
+    const voice = (PERSONA_VOICES[personaId] || "alloy") as "alloy" | "echo" | "fable" | "onyx" | "nova" | "shimmer";
+
+    const response = await client.audio.speech.create({
+      model: "tts-1",
+      voice,
+      input: text,
+      speed: speed || 1.0,
+      response_format: "mp3",
+    });
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+
+    res.set({
+      "Content-Type": "audio/mpeg",
+      "Content-Length": buffer.length.toString(),
+      "Cache-Control": "public, max-age=3600",
+    });
+    res.send(buffer);
+  } catch (error: any) {
+    console.error("TTS error:", error.message);
+    res.status(500).json({ error: "Failed to generate speech", detail: error.message });
+  }
 });
 
 // Real-time reaction for a single persona
