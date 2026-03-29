@@ -19,15 +19,19 @@ export function useCamera(): UseCameraReturn {
     setSupported(hasGetUserMedia);
   }, []);
 
+  // Attach the stream to the video element whenever the ref or active state changes
+  useEffect(() => {
+    if (isActive && videoRef.current && streamRef.current) {
+      videoRef.current.srcObject = streamRef.current;
+    }
+  }, [isActive]);
+
   const startCamera = useCallback(async () => {
     if (!supported) return;
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        streamRef.current = stream;
-        setIsActive(true);
-      }
+      streamRef.current = stream;
+      setIsActive(true);
     } catch (error) {
       console.error("Failed to access camera:", error);
     }
@@ -36,6 +40,7 @@ export function useCamera(): UseCameraReturn {
   const stopCamera = useCallback(() => {
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
       setIsActive(false);
     }
   }, []);
