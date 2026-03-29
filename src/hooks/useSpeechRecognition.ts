@@ -16,6 +16,8 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
   const [supported, setSupported] = useState(true);
   const recognitionRef = useRef<any>(null);
   const finalTranscriptRef = useRef("");
+  // Track whether the user intentionally wants listening on
+  const wantsListeningRef = useRef(false);
 
   useEffect(() => {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -35,11 +37,11 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     recognition.onresult = (event: any) => {
       let interim = "";
       for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript;
+        const t = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
-          finalTranscriptRef.current += transcript + " ";
+          finalTranscriptRef.current += t + " ";
         } else {
-          interim += transcript;
+          interim += t;
         }
       }
       setInterimTranscript(interim);
@@ -47,16 +49,37 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     };
 
     recognition.onerror = (event: any) => {
-      console.error("Speech recognition error", event.error);
+      // "aborted" is expected when we call stop()
+      if (event.error !== "aborted") {
+        console.error("Speech recognition error", event.error);
+      }
+      // "no-speech" is a timeout — not a reason to stop if user wants listening
+      if (event.error === "not-allowed" || event.error === "service-not-allowed") {
+        wantsListeningRef.current = false;
+        setIsListening(false);
+      }
     };
 
     recognition.onend = () => {
-      setIsListening(false);
+      // Auto-restart if the user hasn't explicitly stopped
+      // Browser speech recognition times out after silence — this keeps it alive
+      if (wantsListeningRef.current) {
+        try {
+          recognition.start();
+        } catch {
+          // Already started or other issue — ignore
+          setIsListening(false);
+          wantsListeningRef.current = false;
+        }
+      } else {
+        setIsListening(false);
+      }
     };
 
     recognitionRef.current = recognition;
 
     return () => {
+      wantsListeningRef.current = false;
       if (recognitionRef.current) {
         recognitionRef.current.abort();
       }
@@ -68,11 +91,17 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
       finalTranscriptRef.current = "";
       setTranscript("");
       setInterimTranscript("");
-      recognitionRef.current.start();
+      wantsListeningRef.current = true;
+      try {
+        recognitionRef.current.start();
+      } catch {
+        // May already be started
+      }
     }
   }, [supported]);
 
   const stopListening = useCallback(() => {
+    wantsListeningRef.current = false;
     if (recognitionRef.current) {
       recognitionRef.current.stop();
     }
