@@ -5,12 +5,9 @@ import { SessionTheme } from "../data/themes";
 interface ThemedLayoutProps {
   theme: SessionTheme;
   children: ReactNode[];
-  selfViewTile: ReactNode;
 }
 
-export function ThemedLayout({ theme, children, selfViewTile }: ThemedLayoutProps) {
-  const totalTiles = children.length + 1; // +1 for self-view
-
+export function ThemedLayout({ theme, children }: ThemedLayoutProps) {
   const containerVariants = {
     hidden: {},
     visible: {
@@ -34,43 +31,25 @@ export function ThemedLayout({ theme, children, selfViewTile }: ThemedLayoutProp
   switch (theme.tileLayout) {
     case "panel":
       return (
-        <PanelLayout
-          containerVariants={containerVariants}
-          tileVariants={tileVariants}
-          selfViewTile={selfViewTile}
-        >
+        <PanelLayout containerVariants={containerVariants} tileVariants={tileVariants}>
           {children}
         </PanelLayout>
       );
     case "semicircle":
       return (
-        <SemicircleLayout
-          containerVariants={containerVariants}
-          tileVariants={tileVariants}
-          selfViewTile={selfViewTile}
-          totalTiles={totalTiles}
-        >
+        <SemicircleLayout containerVariants={containerVariants} tileVariants={tileVariants}>
           {children}
         </SemicircleLayout>
       );
     case "theater":
       return (
-        <TheaterLayout
-          containerVariants={containerVariants}
-          tileVariants={tileVariants}
-          selfViewTile={selfViewTile}
-        >
+        <TheaterLayout containerVariants={containerVariants} tileVariants={tileVariants}>
           {children}
         </TheaterLayout>
       );
     default:
       return (
-        <GridLayout
-          containerVariants={containerVariants}
-          tileVariants={tileVariants}
-          selfViewTile={selfViewTile}
-          totalTiles={totalTiles}
-        >
+        <GridLayout containerVariants={containerVariants} tileVariants={tileVariants} totalTiles={children.length}>
           {children}
         </GridLayout>
       );
@@ -79,14 +58,13 @@ export function ThemedLayout({ theme, children, selfViewTile }: ThemedLayoutProp
 
 interface LayoutProps {
   children: ReactNode[];
-  selfViewTile: ReactNode;
   containerVariants: Variants;
   tileVariants: Variants;
   totalTiles?: number;
 }
 
-// Shark Tank: panel of judges in a row at top, user below
-function PanelLayout({ children, selfViewTile, containerVariants, tileVariants }: LayoutProps) {
+// Shark Tank: panel of judges in a row
+function PanelLayout({ children, containerVariants, tileVariants }: LayoutProps) {
   return (
     <motion.div
       className="h-full flex flex-col gap-3"
@@ -94,12 +72,11 @@ function PanelLayout({ children, selfViewTile, containerVariants, tileVariants }
       initial="hidden"
       animate="visible"
     >
-      {/* Judges row */}
-      <div className="flex-1 flex gap-3 items-stretch">
+      <div className="flex-1 flex gap-2 md:gap-3 items-stretch flex-wrap md:flex-nowrap">
         {children.map((child, i) => (
           <motion.div
             key={i}
-            className="flex-1"
+            className="flex-1 min-w-[120px]"
             variants={tileVariants}
             layout
           >
@@ -107,20 +84,12 @@ function PanelLayout({ children, selfViewTile, containerVariants, tileVariants }
           </motion.div>
         ))}
       </div>
-      {/* User's self-view at bottom, smaller */}
-      <motion.div
-        className="h-[30%] max-h-[200px]"
-        variants={tileVariants}
-        layout
-      >
-        {selfViewTile}
-      </motion.div>
     </motion.div>
   );
 }
 
-// Courtroom: semicircle jury arc with user at bottom center
-function SemicircleLayout({ children, selfViewTile, containerVariants, tileVariants, totalTiles = 7 }: LayoutProps) {
+// Courtroom: semicircle jury arc
+function SemicircleLayout({ children, containerVariants, tileVariants }: LayoutProps) {
   const audienceCount = children.length;
   return (
     <motion.div
@@ -129,29 +98,25 @@ function SemicircleLayout({ children, selfViewTile, containerVariants, tileVaria
       initial="hidden"
       animate="visible"
     >
-      {/* Jury arc */}
       {children.map((child, i) => {
-        // Spread personas in a semicircle arc at the top
         const angleRange = Math.min(140, audienceCount * 25);
         const startAngle = (180 - angleRange) / 2;
         const angle = startAngle + (angleRange / Math.max(1, audienceCount - 1)) * i;
         const radian = (angle * Math.PI) / 180;
 
-        // Position along an elliptical arc
         const radiusX = 38;
-        const radiusY = 30;
+        const radiusY = 32;
         const centerX = 50;
-        const centerY = 55;
+        const centerY = 50;
 
         const x = centerX - radiusX * Math.cos(radian);
         const y = centerY - radiusY * Math.sin(radian);
 
-        // Scale based on position (center larger)
         const distFromCenter = Math.abs(i - (audienceCount - 1) / 2) / Math.max(1, (audienceCount - 1) / 2);
         const scale = 1 - distFromCenter * 0.1;
 
         const tileWidth = Math.min(220, Math.max(140, 800 / audienceCount));
-        const tileHeight = tileWidth * 0.75;
+        const tileHeight = tileWidth * 0.8;
 
         return (
           <motion.div
@@ -171,22 +136,12 @@ function SemicircleLayout({ children, selfViewTile, containerVariants, tileVaria
           </motion.div>
         );
       })}
-
-      {/* User self-view at bottom center */}
-      <motion.div
-        className="absolute bottom-2 left-1/2 -translate-x-1/2"
-        style={{ width: 200, height: 150 }}
-        variants={tileVariants}
-        layout
-      >
-        {selfViewTile}
-      </motion.div>
     </motion.div>
   );
 }
 
-// Lecture hall: theater rows with perspective, back rows smaller
-function TheaterLayout({ children, selfViewTile, containerVariants, tileVariants }: LayoutProps) {
+// Lecture hall: theater rows with perspective
+function TheaterLayout({ children, containerVariants, tileVariants }: LayoutProps) {
   const audienceCount = children.length;
   const rowSize = Math.ceil(audienceCount / 2);
   const frontRow = children.slice(0, rowSize);
@@ -194,14 +149,13 @@ function TheaterLayout({ children, selfViewTile, containerVariants, tileVariants
 
   return (
     <motion.div
-      className="h-full flex flex-col gap-2 justify-between"
+      className="h-full flex flex-col gap-2 justify-center"
       variants={containerVariants}
       initial="hidden"
       animate="visible"
     >
-      {/* Back row (smaller, dimmer - farther away) */}
       {backRow.length > 0 && (
-        <div className="flex gap-2 items-stretch px-8 opacity-80" style={{ flex: "0 0 28%" }}>
+        <div className="flex gap-2 items-stretch px-4 md:px-8 opacity-80" style={{ flex: "0 0 35%" }}>
           {backRow.map((child, i) => (
             <motion.div
               key={`back-${i}`}
@@ -215,9 +169,7 @@ function TheaterLayout({ children, selfViewTile, containerVariants, tileVariants
           ))}
         </div>
       )}
-
-      {/* Front row (larger, brighter - closer) */}
-      <div className="flex gap-3 items-stretch" style={{ flex: "0 0 38%" }}>
+      <div className="flex gap-2 md:gap-3 items-stretch" style={{ flex: "0 0 45%" }}>
         {frontRow.map((child, i) => (
           <motion.div
             key={`front-${i}`}
@@ -229,41 +181,28 @@ function TheaterLayout({ children, selfViewTile, containerVariants, tileVariants
           </motion.div>
         ))}
       </div>
-
-      {/* User self-view at bottom */}
-      <motion.div
-        className="max-h-[180px]"
-        style={{ flex: "0 0 25%" }}
-        variants={tileVariants}
-        layout
-      >
-        {selfViewTile}
-      </motion.div>
     </motion.div>
   );
 }
 
-// Default grid: standard Zoom-style grid
-function GridLayout({ children, selfViewTile, containerVariants, tileVariants, totalTiles = 7 }: LayoutProps) {
+// Default grid
+function GridLayout({ children, containerVariants, tileVariants, totalTiles = 7 }: LayoutProps) {
   const gridCols =
     totalTiles <= 2
       ? "grid-cols-2"
       : totalTiles <= 4
       ? "grid-cols-2"
       : totalTiles <= 6
-      ? "grid-cols-3"
-      : "grid-cols-4";
+      ? "grid-cols-2 md:grid-cols-3"
+      : "grid-cols-2 md:grid-cols-4";
 
   return (
     <motion.div
-      className={`grid ${gridCols} gap-3 h-full`}
+      className={`grid ${gridCols} gap-2 md:gap-3 h-full`}
       variants={containerVariants}
       initial="hidden"
       animate="visible"
     >
-      <motion.div variants={tileVariants} layout>
-        {selfViewTile}
-      </motion.div>
       {children.map((child, i) => (
         <motion.div key={i} variants={tileVariants} layout>
           {child}
