@@ -21,6 +21,10 @@ export function FeedbackView({ feedback, transcript, onNewSession }: FeedbackVie
 
   useEffect(() => { setSessionHistory(getSessionHistory()); }, []);
 
+  // Get the most recent session (the one we just completed) for prosody data
+  const latestSession = sessionHistory.length > 0 ? sessionHistory[sessionHistory.length - 1] : null;
+  const prosody = latestSession?.prosodyMetrics;
+
   const selected = feedback[selectedIdx];
   const persona = PERSONA_LIBRARY.find((p) => p.id === selected?.personaId);
 
@@ -75,8 +79,21 @@ export function FeedbackView({ feedback, transcript, onNewSession }: FeedbackVie
               </div>
             </div>
 
-            {/* Mobile: horizontal persona scroll + detail below */}
-            {/* Desktop: side-by-side layout */}
+            {/* Delivery Analysis (Prosody) */}
+            {prosody && (
+              <div className="rounded-lg border border-white/10 bg-white/[0.02] p-4 md:p-5 mb-6 md:mb-8">
+                <h3 className="text-xs md:text-sm font-medium text-white/70 mb-3">Delivery Analysis</h3>
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                  <DeliveryStat label="Volume" value={prosody.averageVolume} unit="%" advice={prosody.averageVolume < 20 ? "Speak louder" : prosody.averageVolume > 80 ? "Too loud" : "Good"} />
+                  <DeliveryStat label="Volume Dynamics" value={prosody.volumeVariation} unit="%" advice={prosody.volumeVariation < 15 ? "Too monotone" : "Good variety"} />
+                  <DeliveryStat label="Pitch Variety" value={prosody.pitchVariation} unit="%" advice={prosody.pitchVariation < 10 ? "Monotone" : "Expressive"} />
+                  <DeliveryStat label="Energy" value={prosody.energyLevel} unit="%" advice={prosody.energyLevel < 20 ? "Low" : prosody.energyLevel > 70 ? "High" : "Moderate"} />
+                  <DeliveryStat label="Silence" value={prosody.silenceRatio} unit="%" advice={prosody.silenceRatio > 60 ? "Too many pauses" : "Good pace"} />
+                </div>
+              </div>
+            )}
+
+            {/* Persona feedback detail */}
             <div className="flex flex-col md:flex-row gap-4 md:gap-6">
               {/* Persona list — horizontal scroll on mobile, vertical on desktop */}
               <div className="md:w-56 flex-shrink-0">
@@ -189,7 +206,8 @@ export function FeedbackView({ feedback, transcript, onNewSession }: FeedbackVie
             ) : (
               <div className="space-y-3">
                 {sessionHistory.map((session) => {
-                  const avg = Object.values(session.perPersonaScores).reduce((a, b) => a + b, 0) / Object.values(session.perPersonaScores).length;
+                  const scores = Object.values(session.perPersonaScores);
+                  const avg = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : session.overallScore || 0;
                   return (
                     <div key={session.id} className="rounded-lg border border-white/10 bg-white/[0.02] p-3 md:p-4">
                       <div className="flex items-start justify-between mb-2 md:mb-3">
@@ -215,6 +233,21 @@ export function FeedbackView({ feedback, transcript, onNewSession }: FeedbackVie
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function DeliveryStat({ label, value, unit, advice }: { label: string; value: number; unit: string; advice: string }) {
+  const color = value < 20 ? "text-red-400" : value > 70 ? "text-emerald-400" : "text-yellow-400";
+  const barColor = value < 20 ? "bg-red-400" : value > 70 ? "bg-emerald-400" : "bg-yellow-400";
+  return (
+    <div className="bg-white/5 rounded-lg p-3">
+      <div className="text-[10px] text-white/50 mb-1">{label}</div>
+      <div className={`text-lg font-bold ${color}`}>{value}{unit}</div>
+      <div className="w-full h-1 rounded-full bg-white/10 mt-1 overflow-hidden">
+        <div className={`h-full ${barColor}`} style={{ width: `${Math.min(100, value)}%` }} />
+      </div>
+      <div className="text-[9px] text-white/30 mt-1">{advice}</div>
     </div>
   );
 }

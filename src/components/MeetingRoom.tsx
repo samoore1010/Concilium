@@ -44,6 +44,7 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
   const [sideTab, setSideTab] = useState<SideTab>("chat");
   const [mobilePanel, setMobilePanel] = useState<SideTab | null>(null);
   const [llmAvailable, setLlmAvailable] = useState(false);
+  const [isEnding, setIsEnding] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
@@ -226,6 +227,10 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
   };
 
   const handleEndSession = async () => {
+    // Guard against double-clicks
+    if (isEnding) return;
+    setIsEnding(true);
+
     clearInterval(timerRef.current);
     stopCamera(); stopListening(); stopTTS(); stopProsody();
     const ft = transcript.join(" ");
@@ -233,25 +238,31 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
     let feedback: FeedbackItem[];
 
     if (llmAvailable && ft.length > 20) {
-      // Use LLM for deep feedback
       try {
         const llmFeedback = await getLLMFeedbackBatch(
           personas.map((p) => p.id),
           ft,
           sessionType
         );
-        feedback = llmFeedback.map((f) => {
-          const persona = personas.find((p) => p.id === f.personaId);
-          return {
-            personaId: f.personaId,
-            personaName: persona?.name || f.personaId,
-            overallScore: f.overallScore,
-            summary: f.summary,
-            strengths: f.strengths,
-            weaknesses: f.weaknesses,
-            suggestion: f.suggestion,
-            emotionalResponse: f.emotionalResponse,
-          };
+
+        // Map LLM results, fill in any missing personas with keyword fallback
+        const llmMap = new Map(llmFeedback.map((f) => [f.personaId, f]));
+        feedback = personas.map((p) => {
+          const llm = llmMap.get(p.id);
+          if (llm) {
+            return {
+              personaId: llm.personaId,
+              personaName: p.name,
+              overallScore: llm.overallScore,
+              summary: llm.summary,
+              strengths: llm.strengths,
+              weaknesses: llm.weaknesses,
+              suggestion: llm.suggestion,
+              emotionalResponse: llm.emotionalResponse,
+            };
+          }
+          // Fallback for personas where LLM failed
+          return generateSessionFeedback(p, ft);
         });
       } catch (err) {
         console.error("LLM feedback failed, falling back:", err);
@@ -261,7 +272,9 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
       feedback = personas.map((p) => generateSessionFeedback(p, ft));
     }
 
-    const avg = feedback.reduce((s, f) => s + f.overallScore, 0) / feedback.length;
+    const avg = feedback.length > 0
+      ? feedback.reduce((s, f) => s + f.overallScore, 0) / feedback.length
+      : 0;
     const pps: Record<string, number> = {};
     feedback.forEach((f) => { pps[f.personaId] = f.overallScore; });
     addSession({
@@ -269,6 +282,7 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
       personaIds: personas.map((p) => p.id), overallScore: avg, perPersonaScores: pps,
       wordCount: ft.split(/\s+/).filter(Boolean).length, duration: elapsed,
       speechMetrics: { wordsPerMinute: speechMetrics.wordsPerMinute, fillerWordCount: speechMetrics.fillerWordCount, longestPause: speechMetrics.longestPause, vocabularyScore: speechMetrics.vocabularyScore },
+      prosodyMetrics: { averageVolume: prosodyMetrics.averageVolume, volumeVariation: prosodyMetrics.volumeVariation, pitchVariation: prosodyMetrics.pitchVariation, energyLevel: prosodyMetrics.energyLevel, silenceRatio: prosodyMetrics.silenceRatio },
     });
     onEndSession(feedback, ft);
   };
@@ -319,7 +333,9 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
           <div className="flex items-center gap-1.5">
             <span className="text-[10px] text-white/40 hidden sm:inline">{personas.length} audience</span>
             <button onClick={onBack} className="text-[10px] text-white/40 hover:text-white/70 px-1.5 py-1 hidden sm:block">Back</button>
-            <button onClick={handleEndSession} className="px-2.5 md:px-4 py-1 md:py-1.5 bg-red-500 hover:bg-red-600 rounded text-[11px] md:text-sm font-medium">End</button>
+            <button onClick={handleEndSession} disabled={isEnding} className="px-2.5 md:px-4 py-1 md:py-1.5 bg-red-500 hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed rounded text-[11px] md:text-sm font-medium">
+              {isEnding ? "Ending..." : "End"}
+            </button>
           </div>
         </div>
 

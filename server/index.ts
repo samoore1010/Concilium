@@ -165,27 +165,31 @@ app.post("/api/feedback-batch", async (req, res) => {
   }
 
   try {
-    const results = await Promise.allSettled(
-      personaIds.map(async (personaId: string) => {
+    // Process sequentially to avoid rate limits with 6 Sonnet calls
+    const feedback: any[] = [];
+
+    for (const personaId of personaIds) {
+      try {
         const persona = getPersonaPrompt(personaId);
         const prompt = buildFeedbackPrompt(persona, transcript, sessionType || "business-pitch");
 
         const message = await client.messages.create({
           model: "claude-sonnet-4-6",
-          max_tokens: 1000,
+          max_tokens: 1500,
           system: persona.systemPrompt,
           messages: [{ role: "user", content: prompt }],
         });
 
         const text = message.content[0].type === "text" ? message.content[0].text : "";
         const jsonStr = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-        return { personaId, ...JSON.parse(jsonStr) };
-      })
-    );
-
-    const feedback = results
-      .filter((r): r is PromiseFulfilledResult<any> => r.status === "fulfilled")
-      .map((r) => r.value);
+        const parsed = JSON.parse(jsonStr);
+        feedback.push({ personaId, ...parsed });
+        console.log(`Feedback generated for ${personaId}: score ${parsed.overallScore}`);
+      } catch (err: any) {
+        console.error(`Feedback failed for ${personaId}:`, err.message);
+        // Continue with other personas
+      }
+    }
 
     res.json({ feedback });
   } catch (error: any) {
