@@ -186,13 +186,16 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
     "sales-demo": "Sales Demo Session",
   };
 
-  // Grid layout based on persona count
+  // Grid layout based on total tiles (personas + self-view)
+  const totalTiles = personas.length + 1;
   const gridClass =
-    personas.length <= 2
+    totalTiles <= 2
       ? "grid-cols-2"
-      : personas.length <= 4
+      : totalTiles <= 4
       ? "grid-cols-2"
-      : "grid-cols-3";
+      : totalTiles <= 6
+      ? "grid-cols-3"
+      : "grid-cols-4";
 
   const handleCallOn = (handRaise: HandRaiseEvent) => {
     const persona = personas.find((p) => p.id === handRaise.personaId);
@@ -270,21 +273,25 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
       {/* Main content */}
       <div className="flex-1 flex overflow-hidden">
         {/* Audience grid */}
-        <div className="flex-1 p-4 relative">
-          {/* Self-view (bottom-left) */}
-          <div className="absolute bottom-4 left-4 z-10 w-40 h-32 rounded-lg bg-black/60 border border-white/20 overflow-hidden shadow-lg">
-            {isCameraActive ? (
-              <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover mirror" />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center text-white/30 text-xs text-center px-2">
-                <button onClick={startCamera} className="text-blue-400 hover:text-blue-300">
-                  Start Camera
-                </button>
-              </div>
-            )}
-          </div>
-
+        <div className="flex-1 p-4">
           <div className={`grid ${gridClass} gap-3 h-full`}>
+            {/* User's self-view tile */}
+            <div className="frosted-glass rounded-lg flex flex-col items-center justify-end overflow-hidden relative">
+              {isCameraActive ? (
+                <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover mirror" />
+              ) : (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <div className="text-white/20 text-sm">Camera Off</div>
+                </div>
+              )}
+              <div className="relative z-10 w-full px-3 py-2 bg-black/50 flex items-center justify-between">
+                <span className="text-xs font-medium text-white">You</span>
+                {isCameraActive && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-300">Live</span>
+                )}
+              </div>
+            </div>
+
             {personas.map((persona) => {
               const state = personaStates[persona.id] || { reaction: "neutral" as ReactionType };
               return (
