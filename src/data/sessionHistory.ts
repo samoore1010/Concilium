@@ -1,5 +1,13 @@
 import { SpeechMetrics } from "../hooks/useSpeechMetrics";
 
+export interface ProsodyRecord {
+  averageVolume: number;
+  volumeVariation: number;
+  pitchVariation: number;
+  energyLevel: number;
+  silenceRatio: number;
+}
+
 export interface SessionRecord {
   id: string;
   date: number;
@@ -10,9 +18,9 @@ export interface SessionRecord {
   wordCount: number;
   duration: number;
   speechMetrics: SpeechMetrics;
+  prosodyMetrics?: ProsodyRecord;
 }
 
-// In-memory store (not using localStorage as per requirements)
 let sessionHistory: SessionRecord[] = [];
 
 export function addSession(session: SessionRecord): void {
@@ -25,6 +33,10 @@ export function getSessionHistory(): SessionRecord[] {
 
 export function getRecentSessions(count: number = 3): SessionRecord[] {
   return sessionHistory.slice(-count).reverse();
+}
+
+export function getSessionById(id: string): SessionRecord | undefined {
+  return sessionHistory.find((s) => s.id === id);
 }
 
 export function clearHistory(): void {

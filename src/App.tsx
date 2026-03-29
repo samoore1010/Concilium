@@ -25,7 +25,8 @@ export default function App() {
   const handleEndSession = (fb: FeedbackItem[], tx: string) => {
     setFeedback(fb);
     setTranscript(tx);
-    setView("generating");
+    // Skip "generating" interstitial — feedback is already computed by MeetingRoom
+    setView("feedback");
   };
 
   const handleNewSession = () => {
@@ -37,13 +38,6 @@ export default function App() {
   useEffect(() => {
     if (view === "joining") {
       const timer = setTimeout(() => setView("meeting"), 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [view]);
-
-  useEffect(() => {
-    if (view === "generating") {
-      const timer = setTimeout(() => setView("feedback"), 2500);
       return () => clearTimeout(timer);
     }
   }, [view]);
