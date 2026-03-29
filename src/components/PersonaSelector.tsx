@@ -33,7 +33,6 @@ export function PersonaSelector({ onStartSession }: PersonaSelectorProps) {
         setStaggerIndex(current);
       } else {
         clearInterval(interval);
-        setStaggerIndex(-1);
       }
     }, 50);
     return () => clearInterval(interval);
@@ -141,7 +140,7 @@ export function PersonaSelector({ onStartSession }: PersonaSelectorProps) {
                 <button
                   key={persona.id}
                   onClick={() => togglePersona(persona.id)}
-                  className={`text-left p-4 rounded-lg border transition-all ${isAnimating ? "animate-fade-in" : "opacity-0"} ${
+                  className={`relative text-left p-4 rounded-lg border transition-all ${isAnimating ? "animate-stagger-in" : "opacity-0"} ${
                     isSelected
                       ? "border-blue-400 bg-blue-500/10"
                       : "border-white/10 bg-white/[0.02] hover:bg-white/[0.04]"

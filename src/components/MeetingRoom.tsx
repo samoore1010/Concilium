@@ -271,20 +271,20 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
       <div className="flex-1 flex overflow-hidden">
         {/* Audience grid */}
         <div className="flex-1 p-4 relative">
-          <div className={`grid ${gridClass} gap-3 h-full`}>
-            {/* Self-view (bottom-left) */}
-            <div className="absolute bottom-4 left-4 w-32 h-32 rounded-lg bg-black/40 border border-white/10 overflow-hidden">
-              {isCameraActive ? (
-                <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center text-white/30 text-xs text-center px-2">
-                  <button onClick={startCamera} className="text-blue-400 hover:text-blue-300">
-                    Start Camera
-                  </button>
-                </div>
-              )}
-            </div>
+          {/* Self-view (bottom-left) */}
+          <div className="absolute bottom-4 left-4 z-10 w-40 h-32 rounded-lg bg-black/60 border border-white/20 overflow-hidden shadow-lg">
+            {isCameraActive ? (
+              <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover mirror" />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center text-white/30 text-xs text-center px-2">
+                <button onClick={startCamera} className="text-blue-400 hover:text-blue-300">
+                  Start Camera
+                </button>
+              </div>
+            )}
+          </div>
 
+          <div className={`grid ${gridClass} gap-3 h-full`}>
             {personas.map((persona) => {
               const state = personaStates[persona.id] || { reaction: "neutral" as ReactionType };
               return (

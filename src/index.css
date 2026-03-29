@@ -120,6 +120,7 @@
 .animate-lean-forward { animation: lean-forward 1s ease-in-out infinite; }
 .animate-lean-back { animation: lean-back 1s ease-in-out infinite; }
 .animate-fade-in { animation: fade-in 0.3s ease-out; }
+.animate-stagger-in { animation: stagger-slide-up 0.4s ease-out forwards; }
 .animate-fade-out { animation: fade-out 0.3s ease-out; }
 .animate-spin-pulse { animation: pulse-spin 1s linear infinite; }
 .animate-progress-bar { animation: progress-bar 2s ease-in-out infinite; }
@@ -139,6 +140,8 @@
   box-shadow: 0 0 20px rgba(239, 68, 68, 0.4), inset 0 0 20px rgba(239, 68, 68, 0.1);
   transition: box-shadow 0.3s ease;
 }
+
+.mirror { transform: scaleX(-1); }
 
 .frosted-glass {
   backdrop-filter: blur(10px);
