@@ -1,0 +1,201 @@
+import { useState, useEffect } from "react";
+import { PERSONA_LIBRARY, Persona } from "../data/personas";
+import { MiiAvatar } from "./MiiAvatar";
+import { getRecentSessions, SessionRecord } from "../data/sessionHistory";
+
+interface PersonaSelectorProps {
+  onStartSession: (personas: Persona[], sessionType: string) => void;
+}
+
+const SESSION_TYPES = [
+  { id: "business-pitch", label: "Business Pitch", desc: "Practice pitching your startup or product to investors" },
+  { id: "mock-trial", label: "Mock Trial / Oral Argument", desc: "Present legal arguments to a simulated jury or judge panel" },
+  { id: "public-speaking", label: "Public Speaking", desc: "Practice a keynote, class presentation, or speech" },
+  { id: "sales-demo", label: "Sales Demo", desc: "Rehearse a product demo for prospective clients" },
+];
+
+export function PersonaSelector({ onStartSession }: PersonaSelectorProps) {
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [sessionType, setSessionType] = useState("business-pitch");
+  const [recentSessions, setRecentSessions] = useState<SessionRecord[]>([]);
+  const [staggerIndex, setStaggerIndex] = useState(-1);
+
+  useEffect(() => {
+    setRecentSessions(getRecentSessions(3));
+  }, []);
+
+  useEffect(() => {
+    const indices = Array.from({ length: PERSONA_LIBRARY.length }, (_, i) => i);
+    let current = -1;
+    const interval = setInterval(() => {
+      current++;
+      if (current < indices.length) {
+        setStaggerIndex(current);
+      } else {
+        clearInterval(interval);
+        setStaggerIndex(-1);
+      }
+    }, 50);
+    return () => clearInterval(interval);
+  }, []);
+
+  const togglePersona = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const selectAll = () => {
+    if (selected.size === PERSONA_LIBRARY.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(PERSONA_LIBRARY.map((p) => p.id)));
+    }
+  };
+
+  const selectedPersonas = PERSONA_LIBRARY.filter((p) => selected.has(p.id));
+
+  return (
+    <div className="min-h-screen bg-[#0f0f23] text-white">
+      {/* Header */}
+      <header className="border-b border-white/10 px-6 py-4">
+        <div className="max-w-6xl mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-blue-500 flex items-center justify-center font-bold text-sm">PP</div>
+            <div>
+              <h1 className="text-lg font-semibold tracking-tight">PitchPractice</h1>
+              <p className="text-xs text-white/40">AI Audience Simulator</p>
+            </div>
+          </div>
+          <button
+            onClick={() => onStartSession(selectedPersonas, sessionType)}
+            disabled={selected.size === 0}
+            className="px-5 py-2.5 bg-blue-500 hover:bg-blue-600 disabled:opacity-30 disabled:cursor-not-allowed rounded-lg text-sm font-medium transition-colors"
+          >
+            Start Session ({selected.size})
+          </button>
+        </div>
+      </header>
+
+      <div className="max-w-6xl mx-auto px-6 py-8">
+        {/* Recent Sessions */}
+        {recentSessions.length > 0 && (
+          <section className="mb-10">
+            <h2 className="text-sm font-medium text-white/60 uppercase tracking-wider mb-4">Recent Sessions</h2>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {recentSessions.map((session) => {
+                const scoreColor = session.overallScore >= 7 ? "text-emerald-400" : session.overallScore >= 5 ? "text-yellow-400" : "text-red-400";
+                const scoreBg = session.overallScore >= 7 ? "bg-emerald-500/10 border-emerald-500/20" : session.overallScore >= 5 ? "bg-yellow-500/10 border-yellow-500/20" : "bg-red-500/10 border-red-500/20";
+                const date = new Date(session.date).toLocaleDateString();
+                return (
+                  <div key={session.id} className={`rounded-lg border p-3 ${scoreBg}`}>
+                    <div className="text-xs text-white/50 mb-1">{date}</div>
+                    <div className="text-sm font-medium text-white mb-1">{session.sessionType.replace(/-/g, " ")}</div>
+                    <div className={`text-lg font-bold ${scoreColor}`}>{session.overallScore.toFixed(1)}/10</div>
+                    <div className="text-xs text-white/40 mt-1">{session.personaIds.length} personas</div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        {/* Session Type */}
+        <section className="mb-10">
+          <h2 className="text-sm font-medium text-white/60 uppercase tracking-wider mb-4">Session Type</h2>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {SESSION_TYPES.map((st) => (
+              <button
+                key={st.id}
+                onClick={() => setSessionType(st.id)}
+                className={`text-left p-4 rounded-lg border transition-all ${
+                  sessionType === st.id
+                    ? "border-blue-400 bg-blue-500/10"
+                    : "border-white/10 bg-white/[0.02] hover:bg-white/[0.04]"
+                }`}
+              >
+                <div className="text-sm font-medium mb-1">{st.label}</div>
+                <div className="text-xs text-white/40 leading-relaxed">{st.desc}</div>
+              </button>
+            ))}
+          </div>
+        </section>
+
+        {/* Audience Selection */}
+        <section>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-medium text-white/60 uppercase tracking-wider">Select Your Audience</h2>
+            <button onClick={selectAll} className="text-xs text-blue-400 hover:text-blue-300">
+              {selected.size === PERSONA_LIBRARY.length ? "Deselect All" : "Select All"}
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {PERSONA_LIBRARY.map((persona, idx) => {
+              const isSelected = selected.has(persona.id);
+              const isAnimating = idx <= staggerIndex;
+              return (
+                <button
+                  key={persona.id}
+                  onClick={() => togglePersona(persona.id)}
+                  className={`text-left p-4 rounded-lg border transition-all ${isAnimating ? "animate-fade-in" : "opacity-0"} ${
+                    isSelected
+                      ? "border-blue-400 bg-blue-500/10"
+                      : "border-white/10 bg-white/[0.02] hover:bg-white/[0.04]"
+                  }`}
+                  style={{ animationDelay: `${idx * 50}ms` }}
+                >
+                  <div className="flex gap-4">
+                    <div className="flex-shrink-0">
+                      <MiiAvatar persona={persona} size={80} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="font-medium text-sm">{persona.name}</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/10 text-white/50">
+                          {persona.age}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-1.5 mb-2">
+                        <Tag color="blue">{persona.profession}</Tag>
+                        <Tag color="green">{persona.politicalLeaning}</Tag>
+                        <Tag color="orange">{persona.communicationStyle}</Tag>
+                      </div>
+                      <p className="text-xs text-white/40 leading-relaxed line-clamp-2">{persona.bio}</p>
+                    </div>
+                  </div>
+                  {/* Selection indicator */}
+                  <div className={`absolute top-3 right-3 w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
+                    isSelected ? "border-blue-400 bg-blue-500" : "border-white/20"
+                  }`}>
+                    {isSelected && (
+                      <svg width="10" height="10" viewBox="0 0 16 16" fill="white">
+                        <path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z" />
+                      </svg>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function Tag({ children, color }: { children: React.ReactNode; color: string }) {
+  const colors: Record<string, string> = {
+    blue: "bg-blue-500/20 text-blue-300",
+    green: "bg-emerald-500/20 text-emerald-300",
+    orange: "bg-orange-500/20 text-orange-300",
+  };
+  return (
+    <span className={`text-[10px] px-1.5 py-0.5 rounded ${colors[color] || colors.blue}`}>
+      {children}
+    </span>
+  );
+}
