@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Persona, ReactionType } from "../data/personas";
 import { generateLiveReaction, generateSessionFeedback, FeedbackItem, shouldRaiseHand } from "../data/feedbackEngine";
+import { checkLLMAvailability, getLLMReactionsBatch, getLLMFeedbackBatch } from "../data/llmApi";
 import { getTheme } from "../data/themes";
 import { getVoiceConfig } from "../data/voiceConfig";
 import { AudienceTile } from "./AudienceTile";
@@ -11,6 +12,7 @@ import { QuestionQueue, QueuedQuestion, handRaiseToQueuedQuestion } from "./Ques
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 import { useCamera } from "../hooks/useCamera";
 import { useSpeechMetrics } from "../hooks/useSpeechMetrics";
+import { useProsody } from "../hooks/useProsody";
 import { useTTS } from "../hooks/useTTS";
 import { addSession, SessionRecord } from "../data/sessionHistory";
 
@@ -41,6 +43,7 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [sideTab, setSideTab] = useState<SideTab>("chat");
   const [mobilePanel, setMobilePanel] = useState<SideTab | null>(null);
+  const [llmAvailable, setLlmAvailable] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
@@ -49,7 +52,13 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
   const { isActive: isCameraActive, startCamera, stopCamera, attachVideo } = useCamera();
   const { transcript: speechTranscript, isListening, startListening, stopListening } = useSpeechRecognition();
   const { metrics: speechMetrics, updateMetrics } = useSpeechMetrics();
+  const { metrics: prosodyMetrics, isAnalyzing: isProsodyActive, startAnalysis: startProsody, stopAnalysis: stopProsody } = useProsody();
   const { speak, stop: stopTTS, isSpeaking } = useTTS();
+
+  // Check if LLM backend is available on mount
+  useEffect(() => {
+    checkLLMAvailability().then(setLlmAvailable);
+  }, []);
 
   useEffect(() => {
     if (!isSpeaking && speakingPersonaId) {
@@ -101,6 +110,68 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
     const newMC = messageCount + 1;
     setMessageCount(newMC);
 
+    if (llmAvailable) {
+      // === LLM-POWERED REACTIONS ===
+      getLLMReactionsBatch(
+        personas.map((p) => p.id),
+        text,
+        sessionType,
+        transcript.slice(-5)
+      ).then((reactions) => {
+        reactions.forEach((r) => {
+          const persona = personas.find((p) => p.id === r.personaId);
+          if (!persona) return;
+
+          // Set reaction
+          setPersonaStates((prev) => ({
+            ...prev,
+            [r.personaId]: { reaction: r.reaction, lastHandRaiseAt: prev[r.personaId]?.lastHandRaiseAt },
+          }));
+
+          // Post comment to chat if persona has one
+          if (r.comment) {
+            setTimeout(() => {
+              setChatMessages((prev) => [...prev, { from: persona.name, text: r.comment!, time: elapsed }]);
+            }, 500 + Math.random() * 1000);
+          }
+
+          // Queue question if persona has one
+          if (r.question) {
+            const queued: QueuedQuestion = {
+              id: `${r.personaId}-${Date.now()}`,
+              personaId: r.personaId,
+              question: r.question,
+              timestamp: Date.now(),
+            };
+            setQuestionQueue((prev) => [...prev, queued]);
+            setTimeout(() => {
+              setPersonaStates((prev) => ({
+                ...prev,
+                [r.personaId]: { ...prev[r.personaId], reaction: "raised-hand" },
+              }));
+            }, 800);
+          }
+
+          // Reset reaction after a delay
+          setTimeout(() => {
+            setPersonaStates((prev) => ({
+              ...prev,
+              [r.personaId]: { ...prev[r.personaId], reaction: "neutral" },
+            }));
+          }, 3000);
+        });
+      }).catch((err) => {
+        console.error("LLM reaction failed, falling back to keywords:", err);
+        fallbackKeywordReactions(text, newMC);
+      });
+    } else {
+      // === KEYWORD FALLBACK ===
+      fallbackKeywordReactions(text, newMC);
+    }
+  }, [inputText, personas, elapsed, messageCount, personaStates, updateMetrics, llmAvailable, sessionType, transcript]);
+
+  // Keyword-based fallback (original system)
+  const fallbackKeywordReactions = useCallback((text: string, newMC: number) => {
     personas.forEach((persona) => {
       const delay = 500 + Math.random() * 2000;
       setTimeout(() => {
@@ -110,7 +181,6 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
             ...prev,
             [persona.id]: { reaction: re.type, emoji: re.emoji, lastHandRaiseAt: prev[persona.id]?.lastHandRaiseAt },
           }));
-          // Persona reacts with a non-question comment (reactions only, not questions)
           if (Math.random() > 0.7) {
             const comment = getReactiveComment(persona, re.type);
             if (comment) setTimeout(() => setChatMessages((prev) => [...prev, { from: persona.name, text: comment, time: elapsed }]), 1000 + Math.random() * 1500);
@@ -136,7 +206,7 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
         }
       }, delay);
     });
-  }, [inputText, personas, elapsed, messageCount, personaStates, updateMetrics]);
+  }, [personas, elapsed, personaStates]);
 
   const handleQuestionClick = (q: QueuedQuestion) => ttsEnabled ? handleListenToQuestion(q) : handleReadQuestion(q);
 
@@ -155,11 +225,42 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
     setQuestionQueue((prev) => prev.filter((x) => x.id !== q.id));
   };
 
-  const handleEndSession = () => {
+  const handleEndSession = async () => {
     clearInterval(timerRef.current);
-    stopCamera(); stopListening(); stopTTS();
+    stopCamera(); stopListening(); stopTTS(); stopProsody();
     const ft = transcript.join(" ");
-    const feedback = personas.map((p) => generateSessionFeedback(p, ft));
+
+    let feedback: FeedbackItem[];
+
+    if (llmAvailable && ft.length > 20) {
+      // Use LLM for deep feedback
+      try {
+        const llmFeedback = await getLLMFeedbackBatch(
+          personas.map((p) => p.id),
+          ft,
+          sessionType
+        );
+        feedback = llmFeedback.map((f) => {
+          const persona = personas.find((p) => p.id === f.personaId);
+          return {
+            personaId: f.personaId,
+            personaName: persona?.name || f.personaId,
+            overallScore: f.overallScore,
+            summary: f.summary,
+            strengths: f.strengths,
+            weaknesses: f.weaknesses,
+            suggestion: f.suggestion,
+            emotionalResponse: f.emotionalResponse,
+          };
+        });
+      } catch (err) {
+        console.error("LLM feedback failed, falling back:", err);
+        feedback = personas.map((p) => generateSessionFeedback(p, ft));
+      }
+    } else {
+      feedback = personas.map((p) => generateSessionFeedback(p, ft));
+    }
+
     const avg = feedback.reduce((s, f) => s + f.overallScore, 0) / feedback.length;
     const pps: Record<string, number> = {};
     feedback.forEach((f) => { pps[f.personaId] = f.overallScore; });
@@ -258,7 +359,7 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
             <TabContent
               sideTab={sideTab} questionQueue={questionQueue} personas={personas}
               speakingPersonaId={speakingPersonaId} ttsEnabled={ttsEnabled}
-              speechMetrics={speechMetrics} chatMessages={chatMessages} chatEndRef={chatEndRef}
+              speechMetrics={speechMetrics} prosodyMetrics={prosodyMetrics} chatMessages={chatMessages} chatEndRef={chatEndRef}
               onListen={handleListenToQuestion} onRead={handleReadQuestion}
               onDismiss={(id) => setQuestionQueue((prev) => prev.filter((q) => q.id !== id))}
               onToggleTTS={() => setTtsEnabled(!ttsEnabled)}
@@ -302,7 +403,7 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
                   <TabContent
                     sideTab={mobilePanel} questionQueue={questionQueue} personas={personas}
                     speakingPersonaId={speakingPersonaId} ttsEnabled={ttsEnabled}
-                    speechMetrics={speechMetrics} chatMessages={chatMessages} chatEndRef={chatEndRef}
+                    speechMetrics={speechMetrics} prosodyMetrics={prosodyMetrics} chatMessages={chatMessages} chatEndRef={chatEndRef}
                     onListen={handleListenToQuestion} onRead={handleReadQuestion}
                     onDismiss={(id) => setQuestionQueue((prev) => prev.filter((q) => q.id !== id))}
                     onToggleTTS={() => setTtsEnabled(!ttsEnabled)}
@@ -322,7 +423,10 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
         <div className="border-t border-white/5 bg-black/40 px-2 md:px-4 py-1.5 md:py-3 flex-shrink-0">
           <div className="max-w-3xl mx-auto flex gap-1.5 md:gap-2 items-center">
             {/* Toolbar buttons */}
-            <ToolbarBtn icon="mic" active={isListening} color={theme.accentColor} onClick={() => isListening ? stopListening() : startListening()} />
+            <ToolbarBtn icon="mic" active={isListening} color={theme.accentColor} onClick={() => {
+              if (isListening) { stopListening(); stopProsody(); }
+              else { startListening(); startProsody(); }
+            }} />
             <ToolbarBtn icon="video" active={isCameraActive} color={theme.accentColor} onClick={() => isCameraActive ? stopCamera() : startCamera()} />
 
             {/* Mobile: panel toggle buttons */}
@@ -360,11 +464,12 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
 }
 
 // === TAB CONTENT (shared by desktop sidebar + mobile bottom sheet) ===
-function TabContent({ sideTab, questionQueue, personas, speakingPersonaId, ttsEnabled, speechMetrics, chatMessages, chatEndRef, onListen, onRead, onDismiss, onToggleTTS }: {
+function TabContent({ sideTab, questionQueue, personas, speakingPersonaId, ttsEnabled, speechMetrics, prosodyMetrics, chatMessages, chatEndRef, onListen, onRead, onDismiss, onToggleTTS }: {
   sideTab: SideTab;
   questionQueue: QueuedQuestion[]; personas: Persona[]; speakingPersonaId: string | null;
   ttsEnabled: boolean;
   speechMetrics: { wordsPerMinute: number; fillerWordCount: number; vocabularyScore: number; longestPause: number };
+  prosodyMetrics: { currentVolume: number; averageVolume: number; volumeVariation: number; pitchVariation: number; energyLevel: number; silenceRatio: number };
   chatMessages: { from: string; text: string; time: number }[];
   chatEndRef: React.RefObject<HTMLDivElement | null>;
   onListen: (q: QueuedQuestion) => void; onRead: (q: QueuedQuestion) => void;
@@ -373,10 +478,20 @@ function TabContent({ sideTab, questionQueue, personas, speakingPersonaId, ttsEn
   if (sideTab === "coach") {
     return (
       <div className="flex-1 overflow-y-auto px-3 py-3 space-y-3 text-xs">
+        <div className="text-[10px] text-white/30 uppercase tracking-wider mb-1">Content</div>
         <Stat label="WPM" value={speechMetrics.wordsPerMinute} color="blue" pct={Math.min(100, (speechMetrics.wordsPerMinute / 150) * 100)} />
         <Stat label="Filler Words" value={speechMetrics.fillerWordCount} color="orange" sub={speechMetrics.fillerWordCount > 5 ? "Try to reduce" : "Good"} />
         <Stat label="Vocabulary" value={speechMetrics.vocabularyScore} color="emerald" pct={speechMetrics.vocabularyScore} />
         <Stat label="Longest Pause" value={`${speechMetrics.longestPause.toFixed(1)}s`} color="yellow" sub={speechMetrics.longestPause > 3 ? "Take more pauses" : "Steady pace"} />
+
+        <div className="border-t border-white/5 pt-2 mt-2">
+          <div className="text-[10px] text-white/30 uppercase tracking-wider mb-1">Delivery</div>
+          <Stat label="Volume" value={prosodyMetrics.averageVolume} color="cyan" pct={prosodyMetrics.averageVolume} sub={prosodyMetrics.averageVolume < 20 ? "Speak louder" : prosodyMetrics.averageVolume > 80 ? "Very loud" : "Good projection"} />
+          <Stat label="Volume Dynamics" value={prosodyMetrics.volumeVariation} color="cyan" pct={prosodyMetrics.volumeVariation} sub={prosodyMetrics.volumeVariation < 15 ? "Too monotone" : "Good variation"} />
+          <Stat label="Pitch Variety" value={prosodyMetrics.pitchVariation} color="purple" pct={prosodyMetrics.pitchVariation} sub={prosodyMetrics.pitchVariation < 10 ? "Monotone" : "Expressive"} />
+          <Stat label="Energy" value={prosodyMetrics.energyLevel} color="rose" pct={prosodyMetrics.energyLevel} sub={prosodyMetrics.energyLevel < 20 ? "Low energy" : prosodyMetrics.energyLevel > 70 ? "High energy" : "Moderate"} />
+          <Stat label="Silence" value={`${prosodyMetrics.silenceRatio}%`} color="gray" sub={prosodyMetrics.silenceRatio > 60 ? "Too many pauses" : "Good pace"} />
+        </div>
       </div>
     );
   }
@@ -402,8 +517,8 @@ function TabContent({ sideTab, questionQueue, personas, speakingPersonaId, ttsEn
 }
 
 function Stat({ label, value, color, pct, sub }: { label: string; value: number | string; color: string; pct?: number; sub?: string }) {
-  const colorMap: Record<string, string> = { blue: "text-blue-400", orange: "text-orange-400", emerald: "text-emerald-400", yellow: "text-yellow-400" };
-  const bgMap: Record<string, string> = { blue: "bg-blue-400", orange: "bg-orange-400", emerald: "bg-emerald-400", yellow: "bg-yellow-400" };
+  const colorMap: Record<string, string> = { blue: "text-blue-400", orange: "text-orange-400", emerald: "text-emerald-400", yellow: "text-yellow-400", cyan: "text-cyan-400", purple: "text-purple-400", rose: "text-rose-400", gray: "text-gray-400" };
+  const bgMap: Record<string, string> = { blue: "bg-blue-400", orange: "bg-orange-400", emerald: "bg-emerald-400", yellow: "bg-yellow-400", cyan: "bg-cyan-400", purple: "bg-purple-400", rose: "bg-rose-400", gray: "bg-gray-400" };
   return (
     <div>
       <div className="text-white/50 mb-0.5 text-[11px]">{label}</div>
