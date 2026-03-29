@@ -2,14 +2,7 @@
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
     "builder": "NIXPACKS",
-    "nixpacksPlan": {
-      "phases": {
-        "setup": {
-          "nixPkgs": ["nodejs_22"]
-        }
-      }
-    },
-    "buildCommand": "npm ci --include=dev && npm run build"
+    "buildCommand": "npm run build"
   },
   "deploy": {
     "startCommand": "npx serve dist -s -l tcp://0.0.0.0:$PORT",
