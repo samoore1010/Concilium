@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import { Persona, ReactionType } from "../data/personas";
 import { generateLiveReaction, generateSessionFeedback, FeedbackItem, shouldRaiseHand, HandRaiseEvent } from "../data/feedbackEngine";
 import { getTheme } from "../data/themes";
@@ -39,6 +40,7 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
   const [speakingPersonaId, setSpeakingPersonaId] = useState<string | null>(null);
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [sideTab, setSideTab] = useState<SideTab>("chat");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
@@ -53,7 +55,6 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
   // Clear speaking persona when TTS finishes
   useEffect(() => {
     if (!isSpeaking && speakingPersonaId) {
-      // Delay slightly so the speaking animation is visible
       const timer = setTimeout(() => {
         setPersonaStates((prev) => ({
           ...prev,
@@ -158,7 +159,6 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
               ...prev,
               [persona.id]: { ...prev[persona.id], reaction: "raised-hand", lastHandRaiseAt: now },
             }));
-            // Reset raised-hand after a bit (they're now in the queue)
             setTimeout(() => {
               setPersonaStates((prev) => ({
                 ...prev,
@@ -171,18 +171,24 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
     });
   }, [inputText, personas, elapsed, messageCount, personaStates, updateMetrics]);
 
+  const handleQuestionClick = (question: QueuedQuestion) => {
+    if (ttsEnabled) {
+      handleListenToQuestion(question);
+    } else {
+      handleReadQuestion(question);
+    }
+  };
+
   const handleListenToQuestion = (question: QueuedQuestion) => {
     const voiceConfig = getVoiceConfig(question.personaId);
     const persona = personas.find((p) => p.id === question.personaId);
 
-    // Set speaking state
     setSpeakingPersonaId(question.personaId);
     setPersonaStates((prev) => ({
       ...prev,
       [question.personaId]: { ...prev[question.personaId], reaction: "speaking" },
     }));
 
-    // Add to chat
     if (persona) {
       setChatMessages((prev) => [
         ...prev,
@@ -190,10 +196,7 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
       ]);
     }
 
-    // Speak
     speak(question.question, voiceConfig);
-
-    // Remove from queue
     setQuestionQueue((prev) => prev.filter((q) => q.id !== question.id));
   };
 
@@ -206,7 +209,6 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
       ]);
     }
     setQuestionQueue((prev) => prev.filter((q) => q.id !== question.id));
-    setSideTab("chat");
   };
 
   const handleDismissQuestion = (questionId: string) => {
@@ -248,28 +250,10 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
   const formatTime = (s: number) =>
     `${Math.floor(s / 60).toString().padStart(2, "0")}:${(s % 60).toString().padStart(2, "0")}`;
 
-  // Self-view tile
-  const selfViewTile = (
-    <div className="frosted-glass rounded-lg flex flex-col items-center justify-end overflow-hidden relative h-full">
-      {isCameraActive ? (
-        <video ref={videoRef} autoPlay playsInline muted className="absolute inset-0 w-full h-full object-cover mirror" />
-      ) : (
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="text-white/20 text-sm">Camera Off</div>
-        </div>
-      )}
-      <div className="relative z-10 w-full px-3 py-2 bg-black/50 flex items-center justify-between">
-        <span className="text-xs font-medium text-white">You</span>
-        {isCameraActive && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-500/20 text-green-300">Live</span>
-        )}
-      </div>
-    </div>
-  );
-
-  // Audience tiles
+  // Build audience tiles with pending questions
   const audienceTiles = personas.map((persona) => {
     const state = personaStates[persona.id] || { reaction: "neutral" as ReactionType };
+    const pendingQ = questionQueue.find((q) => q.personaId === persona.id);
     return (
       <AudienceTile
         key={persona.id}
@@ -277,6 +261,8 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
         reaction={state.reaction}
         reactionEmoji={state.emoji}
         isSpeaking={speakingPersonaId === persona.id}
+        pendingQuestion={pendingQ}
+        onQuestionClick={handleQuestionClick}
       />
     );
   });
@@ -289,118 +275,122 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
       {/* Content layer */}
       <div className="relative z-10 flex flex-col h-full">
         {/* Top bar */}
-        <div className={`flex items-center justify-between px-4 py-2 bg-gradient-to-b ${theme.topBarAccent} border-b border-white/5`}>
-          <div className="flex items-center gap-3">
-            <div className="w-2.5 h-2.5 rounded-full animate-pulse" style={{ backgroundColor: theme.accentColor }} />
-            <span className="text-sm font-medium">{theme.label} Session</span>
-            <span className="text-xs text-white/40 font-mono">{formatTime(elapsed)}</span>
+        <div className={`flex items-center justify-between px-3 md:px-4 py-2 bg-gradient-to-b ${theme.topBarAccent} border-b border-white/5`}>
+          <div className="flex items-center gap-2 md:gap-3">
+            <div className="w-2 h-2 md:w-2.5 md:h-2.5 rounded-full animate-pulse" style={{ backgroundColor: theme.accentColor }} />
+            <span className="text-xs md:text-sm font-medium">{theme.label} Session</span>
+            <span className="text-[10px] md:text-xs text-white/40 font-mono">{formatTime(elapsed)}</span>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-white/40">{personas.length} audience members</span>
-            <button onClick={onBack} className="text-xs text-white/40 hover:text-white/70 px-2 py-1">
+          <div className="flex items-center gap-1.5 md:gap-2">
+            <span className="text-[10px] md:text-xs text-white/40 hidden sm:inline">{personas.length} audience</span>
+            {/* Mobile sidebar toggle */}
+            <button
+              onClick={() => setSidebarOpen(!sidebarOpen)}
+              className="md:hidden w-8 h-8 flex items-center justify-center rounded bg-white/10 text-white/70"
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M2 3h12v1.5H2V3zm0 4.25h12v1.5H2v-1.5zm0 4.25h12V13H2v-1.5z" />
+              </svg>
+            </button>
+            <button onClick={onBack} className="text-[10px] md:text-xs text-white/40 hover:text-white/70 px-1.5 md:px-2 py-1">
               Back
             </button>
             <button
               onClick={handleEndSession}
-              className="px-4 py-1.5 bg-red-500 hover:bg-red-600 rounded text-sm font-medium transition-colors"
+              className="px-3 md:px-4 py-1.5 bg-red-500 hover:bg-red-600 rounded text-xs md:text-sm font-medium transition-colors"
             >
-              End Session
+              End
             </button>
           </div>
         </div>
 
         {/* Main content */}
-        <div className="flex-1 flex overflow-hidden">
+        <div className="flex-1 flex overflow-hidden relative">
           {/* Audience area */}
-          <div className="flex-1 p-4">
-            <ThemedLayout theme={theme} selfViewTile={selfViewTile}>
+          <div className="flex-1 p-2 md:p-4 overflow-y-auto md:overflow-hidden">
+            <ThemedLayout theme={theme}>
               {audienceTiles}
             </ThemedLayout>
           </div>
 
-          {/* Side panel — Chat / Coach / Questions */}
-          <div className="w-72 border-l border-white/5 flex flex-col bg-black/20">
-            {/* Toggle tabs */}
-            <div className="flex border-b border-white/5">
-              {(["chat", "coach", "questions"] as SideTab[]).map((tab) => (
-                <button
-                  key={tab}
-                  onClick={() => setSideTab(tab)}
-                  className={`flex-1 px-2 py-2 text-xs font-medium transition-colors relative ${
-                    sideTab === tab ? "text-white bg-white/10" : "text-white/50 hover:text-white/70"
-                  }`}
-                >
-                  {tab === "questions" ? "Q&A" : tab.charAt(0).toUpperCase() + tab.slice(1)}
-                  {tab === "questions" && questionQueue.length > 0 && (
-                    <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-red-500 text-[9px] flex items-center justify-center font-bold">
-                      {questionQueue.length}
-                    </span>
-                  )}
-                </button>
-              ))}
-            </div>
-
-            {sideTab === "coach" ? (
-              <div className="flex-1 overflow-y-auto px-3 py-3 space-y-4 text-xs">
-                <div>
-                  <div className="text-white/50 mb-1">Words Per Minute</div>
-                  <div className="text-lg font-bold text-blue-400">{speechMetrics.wordsPerMinute}</div>
-                  <div className="w-full h-1.5 rounded-full bg-white/10 mt-1 overflow-hidden">
-                    <div className="h-full bg-blue-400" style={{ width: `${Math.min(100, (speechMetrics.wordsPerMinute / 150) * 100)}%` }} />
-                  </div>
-                </div>
-                <div>
-                  <div className="text-white/50 mb-1">Filler Words</div>
-                  <div className="text-lg font-bold text-orange-400">{speechMetrics.fillerWordCount}</div>
-                  <div className="text-white/40 text-[10px] mt-1">{speechMetrics.fillerWordCount > 5 ? "Try to reduce usage" : "Good"}</div>
-                </div>
-                <div>
-                  <div className="text-white/50 mb-1">Vocabulary Variety</div>
-                  <div className="text-lg font-bold text-emerald-400">{speechMetrics.vocabularyScore}</div>
-                  <div className="w-full h-1.5 rounded-full bg-white/10 mt-1 overflow-hidden">
-                    <div className="h-full bg-emerald-400" style={{ width: `${speechMetrics.vocabularyScore}%` }} />
-                  </div>
-                </div>
-                <div>
-                  <div className="text-white/50 mb-1">Longest Pause</div>
-                  <div className="text-lg font-bold text-yellow-400">{speechMetrics.longestPause.toFixed(1)}s</div>
-                  <div className="text-white/40 text-[10px] mt-1">{speechMetrics.longestPause > 3 ? "Take more pauses" : "Steady pace"}</div>
-                </div>
+          {/* Floating self-view PiP */}
+          <div className="absolute bottom-3 right-3 md:bottom-4 md:right-[300px] z-20 w-28 h-20 md:w-36 md:h-24 rounded-lg bg-black/60 border border-white/20 overflow-hidden shadow-xl">
+            {isCameraActive ? (
+              <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover mirror" />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center">
+                <span className="text-[10px] text-white/30">Camera Off</span>
               </div>
-            ) : sideTab === "questions" ? (
-              <QuestionQueue
-                questions={questionQueue}
+            )}
+            <div className="absolute bottom-0 left-0 right-0 px-1.5 py-0.5 bg-black/60 flex items-center justify-between">
+              <span className="text-[9px] text-white/70">You</span>
+              {isCameraActive && (
+                <span className="text-[8px] px-1 rounded bg-green-500/30 text-green-300">Live</span>
+              )}
+            </div>
+          </div>
+
+          {/* Side panel — desktop: always visible, mobile: overlay */}
+          <AnimatePresence>
+            {/* Desktop sidebar */}
+            <div className="hidden md:flex w-72 border-l border-white/5 flex-col bg-black/20">
+              <SidebarContent
+                sideTab={sideTab}
+                setSideTab={setSideTab}
+                questionQueue={questionQueue}
                 personas={personas}
                 speakingPersonaId={speakingPersonaId}
                 ttsEnabled={ttsEnabled}
+                speechMetrics={speechMetrics}
+                chatMessages={chatMessages}
+                chatEndRef={chatEndRef}
                 onListen={handleListenToQuestion}
                 onRead={handleReadQuestion}
                 onDismiss={handleDismissQuestion}
                 onToggleTTS={() => setTtsEnabled(!ttsEnabled)}
               />
-            ) : (
-              <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2">
-                {chatMessages.length === 0 && (
-                  <p className="text-xs text-white/20 text-center mt-8">
-                    Start speaking to see audience reactions...
-                  </p>
-                )}
-                {chatMessages.map((msg, i) => (
-                  <div key={i} className={`text-xs ${msg.from === "You" ? "text-blue-300" : "text-white/70"}`}>
-                    <span className="font-medium">{msg.from}:</span>{" "}
-                    <span className="text-white/50">{msg.text}</span>
-                  </div>
-                ))}
-                <div ref={chatEndRef} />
-              </div>
+            </div>
+
+            {/* Mobile sidebar overlay */}
+            {sidebarOpen && (
+              <motion.div
+                key="mobile-sidebar"
+                initial={{ x: "100%" }}
+                animate={{ x: 0 }}
+                exit={{ x: "100%" }}
+                transition={{ type: "spring", stiffness: 300, damping: 30 }}
+                className="md:hidden absolute inset-y-0 right-0 w-72 z-30 border-l border-white/5 flex flex-col bg-[#0f0f23]/95 backdrop-blur-md"
+              >
+                <button
+                  onClick={() => setSidebarOpen(false)}
+                  className="absolute top-2 right-2 w-7 h-7 flex items-center justify-center rounded bg-white/10 text-white/60 z-10"
+                >
+                  ✕
+                </button>
+                <SidebarContent
+                  sideTab={sideTab}
+                  setSideTab={setSideTab}
+                  questionQueue={questionQueue}
+                  personas={personas}
+                  speakingPersonaId={speakingPersonaId}
+                  ttsEnabled={ttsEnabled}
+                  speechMetrics={speechMetrics}
+                  chatMessages={chatMessages}
+                  chatEndRef={chatEndRef}
+                  onListen={handleListenToQuestion}
+                  onRead={handleReadQuestion}
+                  onDismiss={handleDismissQuestion}
+                  onToggleTTS={() => setTtsEnabled(!ttsEnabled)}
+                />
+              </motion.div>
             )}
-          </div>
+          </AnimatePresence>
         </div>
 
         {/* Bottom bar */}
-        <div className="border-t border-white/5 bg-black/40 px-4 py-3">
-          <div className="max-w-3xl mx-auto flex gap-2">
-            <div className="flex items-center gap-2 mr-2">
+        <div className="border-t border-white/5 bg-black/40 px-2 md:px-4 py-2 md:py-3">
+          <div className="max-w-3xl mx-auto flex gap-1.5 md:gap-2">
+            <div className="flex items-center gap-1.5 md:gap-2 mr-1 md:mr-2">
               <ToolbarButton
                 icon="mic"
                 label="Mic"
@@ -421,13 +411,13 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-              placeholder="Type your presentation text here (or use mic)..."
-              className="flex-1 bg-white/5 border border-white/10 rounded-lg px-4 py-2 text-sm text-white placeholder-white/30 outline-none focus:border-blue-400/50 transition-colors"
+              placeholder="Type here (or use mic)..."
+              className="flex-1 min-w-0 bg-white/5 border border-white/10 rounded-lg px-3 md:px-4 py-2 text-sm text-white placeholder-white/30 outline-none focus:border-blue-400/50 transition-colors"
             />
             <button
               onClick={handleSendMessage}
               disabled={!inputText.trim()}
-              className="px-4 py-2 bg-blue-500 hover:bg-blue-600 disabled:opacity-30 rounded-lg text-sm font-medium transition-colors"
+              className="px-3 md:px-4 py-2 bg-blue-500 hover:bg-blue-600 disabled:opacity-30 rounded-lg text-sm font-medium transition-colors flex-shrink-0"
             >
               Send
             </button>
@@ -435,6 +425,115 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
         </div>
       </div>
     </div>
+  );
+}
+
+// Extracted sidebar content for reuse between desktop and mobile
+function SidebarContent({
+  sideTab,
+  setSideTab,
+  questionQueue,
+  personas,
+  speakingPersonaId,
+  ttsEnabled,
+  speechMetrics,
+  chatMessages,
+  chatEndRef,
+  onListen,
+  onRead,
+  onDismiss,
+  onToggleTTS,
+}: {
+  sideTab: SideTab;
+  setSideTab: (tab: SideTab) => void;
+  questionQueue: QueuedQuestion[];
+  personas: Persona[];
+  speakingPersonaId: string | null;
+  ttsEnabled: boolean;
+  speechMetrics: { wordsPerMinute: number; fillerWordCount: number; vocabularyScore: number; longestPause: number };
+  chatMessages: { from: string; text: string; time: number }[];
+  chatEndRef: React.RefObject<HTMLDivElement | null>;
+  onListen: (q: QueuedQuestion) => void;
+  onRead: (q: QueuedQuestion) => void;
+  onDismiss: (id: string) => void;
+  onToggleTTS: () => void;
+}) {
+  return (
+    <>
+      <div className="flex border-b border-white/5">
+        {(["chat", "coach", "questions"] as SideTab[]).map((tab) => (
+          <button
+            key={tab}
+            onClick={() => setSideTab(tab)}
+            className={`flex-1 px-2 py-2 text-xs font-medium transition-colors relative ${
+              sideTab === tab ? "text-white bg-white/10" : "text-white/50 hover:text-white/70"
+            }`}
+          >
+            {tab === "questions" ? "Q&A" : tab.charAt(0).toUpperCase() + tab.slice(1)}
+            {tab === "questions" && questionQueue.length > 0 && (
+              <span className="absolute top-1 right-1 w-4 h-4 rounded-full bg-red-500 text-[9px] flex items-center justify-center font-bold">
+                {questionQueue.length}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {sideTab === "coach" ? (
+        <div className="flex-1 overflow-y-auto px-3 py-3 space-y-4 text-xs">
+          <div>
+            <div className="text-white/50 mb-1">Words Per Minute</div>
+            <div className="text-lg font-bold text-blue-400">{speechMetrics.wordsPerMinute}</div>
+            <div className="w-full h-1.5 rounded-full bg-white/10 mt-1 overflow-hidden">
+              <div className="h-full bg-blue-400" style={{ width: `${Math.min(100, (speechMetrics.wordsPerMinute / 150) * 100)}%` }} />
+            </div>
+          </div>
+          <div>
+            <div className="text-white/50 mb-1">Filler Words</div>
+            <div className="text-lg font-bold text-orange-400">{speechMetrics.fillerWordCount}</div>
+            <div className="text-white/40 text-[10px] mt-1">{speechMetrics.fillerWordCount > 5 ? "Try to reduce usage" : "Good"}</div>
+          </div>
+          <div>
+            <div className="text-white/50 mb-1">Vocabulary Variety</div>
+            <div className="text-lg font-bold text-emerald-400">{speechMetrics.vocabularyScore}</div>
+            <div className="w-full h-1.5 rounded-full bg-white/10 mt-1 overflow-hidden">
+              <div className="h-full bg-emerald-400" style={{ width: `${speechMetrics.vocabularyScore}%` }} />
+            </div>
+          </div>
+          <div>
+            <div className="text-white/50 mb-1">Longest Pause</div>
+            <div className="text-lg font-bold text-yellow-400">{speechMetrics.longestPause.toFixed(1)}s</div>
+            <div className="text-white/40 text-[10px] mt-1">{speechMetrics.longestPause > 3 ? "Take more pauses" : "Steady pace"}</div>
+          </div>
+        </div>
+      ) : sideTab === "questions" ? (
+        <QuestionQueue
+          questions={questionQueue}
+          personas={personas}
+          speakingPersonaId={speakingPersonaId}
+          ttsEnabled={ttsEnabled}
+          onListen={onListen}
+          onRead={onRead}
+          onDismiss={onDismiss}
+          onToggleTTS={onToggleTTS}
+        />
+      ) : (
+        <div className="flex-1 overflow-y-auto px-3 py-2 space-y-2">
+          {chatMessages.length === 0 && (
+            <p className="text-xs text-white/20 text-center mt-8">
+              Start speaking to see audience reactions...
+            </p>
+          )}
+          {chatMessages.map((msg, i) => (
+            <div key={i} className={`text-xs ${msg.from === "You" ? "text-blue-300" : "text-white/70"}`}>
+              <span className="font-medium">{msg.from}:</span>{" "}
+              <span className="text-white/50">{msg.text}</span>
+            </div>
+          ))}
+          <div ref={chatEndRef} />
+        </div>
+      )}
+    </>
   );
 }
 
@@ -474,7 +573,7 @@ function ToolbarButton({
   return (
     <button
       onClick={onClick}
-      className={`w-9 h-9 flex items-center justify-center rounded-full transition-colors ${
+      className={`w-8 h-8 md:w-9 md:h-9 flex items-center justify-center rounded-full transition-colors ${
         isActive
           ? "text-white"
           : "bg-white/5 hover:bg-white/10 text-white/50 hover:text-white/80"
