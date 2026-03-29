@@ -1,0 +1,86 @@
+export interface VoiceConfig {
+  preferredGender: "male" | "female";
+  pitch: number;
+  rate: number;
+  volume: number;
+}
+
+export const PERSONA_VOICE_MAP: Record<string, VoiceConfig> = {
+  "maria-chen": {
+    preferredGender: "female",
+    pitch: 1.1,
+    rate: 0.95,
+    volume: 0.9,
+  },
+  "james-wilson": {
+    preferredGender: "male",
+    pitch: 0.8,
+    rate: 0.85,
+    volume: 0.85,
+  },
+  "aisha-johnson": {
+    preferredGender: "female",
+    pitch: 0.9,
+    rate: 1.05,
+    volume: 0.95,
+  },
+  "carlos-reyes": {
+    preferredGender: "male",
+    pitch: 1.1,
+    rate: 1.1,
+    volume: 0.9,
+  },
+  "patricia-omalley": {
+    preferredGender: "female",
+    pitch: 1.2,
+    rate: 0.9,
+    volume: 0.85,
+  },
+  "dev-patel": {
+    preferredGender: "male",
+    pitch: 0.85,
+    rate: 1.0,
+    volume: 0.95,
+  },
+};
+
+export function getVoiceConfig(personaId: string): VoiceConfig {
+  return (
+    PERSONA_VOICE_MAP[personaId] || {
+      preferredGender: "female" as const,
+      pitch: 1.0,
+      rate: 1.0,
+      volume: 0.9,
+    }
+  );
+}
+
+export function pickBestVoice(
+  voices: SpeechSynthesisVoice[],
+  config: VoiceConfig
+): SpeechSynthesisVoice | null {
+  if (voices.length === 0) return null;
+
+  // Filter English voices
+  const englishVoices = voices.filter(
+    (v) => v.lang.startsWith("en") && !v.name.includes("Google")
+  );
+
+  // Try Google voices first (better quality in Chrome)
+  const googleVoices = voices.filter(
+    (v) => v.lang.startsWith("en") && v.name.includes("Google")
+  );
+
+  const candidates = googleVoices.length > 0 ? googleVoices : englishVoices.length > 0 ? englishVoices : voices;
+
+  // Try to match gender heuristically by name
+  const genderMatch = candidates.filter((v) => {
+    const name = v.name.toLowerCase();
+    if (config.preferredGender === "female") {
+      return name.includes("female") || name.includes("woman") || name.includes("samantha") || name.includes("karen") || name.includes("victoria") || name.includes("fiona");
+    }
+    return name.includes("male") || name.includes("daniel") || name.includes("david") || name.includes("james") || name.includes("alex");
+  });
+
+  return genderMatch.length > 0 ? genderMatch[0] : candidates[0];
+}
