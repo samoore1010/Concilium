@@ -46,7 +46,7 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
 
   const theme = getTheme(sessionType);
 
-  const { videoRef, isActive: isCameraActive, startCamera, stopCamera } = useCamera();
+  const { isActive: isCameraActive, startCamera, stopCamera, attachVideo } = useCamera();
   const { transcript: speechTranscript, isListening, startListening, stopListening } = useSpeechRecognition();
   const { metrics: speechMetrics, updateMetrics } = useSpeechMetrics();
   const { speak, stop: stopTTS, isSpeaking } = useTTS();
@@ -110,9 +110,10 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
             ...prev,
             [persona.id]: { reaction: re.type, emoji: re.emoji, lastHandRaiseAt: prev[persona.id]?.lastHandRaiseAt },
           }));
-          if (Math.random() > 0.65) {
-            const qr = getQuickResponse(persona);
-            if (qr) setTimeout(() => setChatMessages((prev) => [...prev, { from: persona.name, text: qr, time: elapsed }]), 1000 + Math.random() * 1500);
+          // Persona reacts with a non-question comment (reactions only, not questions)
+          if (Math.random() > 0.7) {
+            const comment = getReactiveComment(persona, re.type);
+            if (comment) setTimeout(() => setChatMessages((prev) => [...prev, { from: persona.name, text: comment, time: elapsed }]), 1000 + Math.random() * 1500);
           }
           setTimeout(() => {
             setPersonaStates((prev) => ({
@@ -189,7 +190,7 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
   const selfView = (className: string) => (
     <div className={`rounded-lg bg-black/60 border border-white/20 overflow-hidden relative ${className}`}>
       {isCameraActive ? (
-        <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover mirror" />
+        <video ref={attachVideo} autoPlay playsInline muted className="w-full h-full object-cover mirror" />
       ) : (
         <div className="w-full h-full flex items-center justify-center">
           <span className="text-[10px] text-white/30">Camera Off</span>
@@ -433,14 +434,23 @@ function ToolbarBtn({ icon, active, color, onClick }: { icon: string; active?: b
   );
 }
 
-function getQuickResponse(persona: Persona): string | null {
-  const r: Record<string, string[]> = {
-    analytical: ["What's the data behind that?", "Can you quantify that?", "Do you have a case study?", "What's the sample size?"],
-    emotional: ["I love the vision!", "How does this help people?", "Tell me the human side.", "Who benefits most?"],
-    skeptical: ["What's different here?", "What about the risks?", "What could go wrong?", "Who else has tried this?"],
-    supportive: ["I appreciate the honesty.", "That's a thoughtful approach.", "Good point — keep going.", "I see the potential."],
-    blunt: ["Get to the point.", "How much does it cost?", "What's the bottom line?", "Skip the fluff."],
+// Non-question reactive comments (questions go through the question queue only)
+function getReactiveComment(persona: Persona, reaction: ReactionType): string | null {
+  const positive: Record<string, string[]> = {
+    analytical: ["Interesting data point.", "That tracks.", "Solid logic there."],
+    emotional: ["I love that!", "That resonates.", "Really compelling."],
+    skeptical: ["Hmm, we'll see.", "Bold claim.", "I've heard similar before."],
+    supportive: ["Great point!", "Keep going.", "I like the direction."],
+    blunt: ["Fair enough.", "Noted.", "OK, continue."],
   };
-  const pool = r[persona.communicationStyle] || r.analytical;
-  return pool[Math.floor(Math.random() * pool.length)];
+  const negative: Record<string, string[]> = {
+    analytical: ["I'm not seeing the evidence.", "That's speculative.", "Unsubstantiated."],
+    emotional: ["That feels off.", "I'm not convinced.", "Missing the human element."],
+    skeptical: ["I don't buy it.", "Too optimistic.", "Prove it."],
+    supportive: ["Hmm, maybe rethink that part.", "I see your intent, but...", "Almost there."],
+    blunt: ["Weak argument.", "Not compelling.", "Try harder."],
+  };
+  const pool = (reaction === "nod" || reaction === "smile") ? positive : negative;
+  const comments = pool[persona.communicationStyle] || pool.analytical;
+  return comments[Math.floor(Math.random() * comments.length)];
 }
