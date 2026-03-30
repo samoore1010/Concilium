@@ -63,7 +63,8 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
   const sessionEndedRef = useRef(false);
   const lastInterruptPersonaRef = useRef<string | null>(null);
   const consecutiveCountRef = useRef(0);          // How many times current persona has spoken in a row
-  const MAX_CONSECUTIVE = 2;                       // Max questions before forced rotation
+  const MAX_CONSECUTIVE = 2;
+  const processInterruptRef = useRef<() => void>(() => {});                       // Max questions before forced rotation
 
   const theme = getTheme(sessionType);
   const behavior = getSessionBehavior(sessionType);
@@ -186,9 +187,12 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
       speak(next.text, next.personaId, getVoiceConfig(next.personaId));
     } else {
       isProcessingInterruptRef.current = false;
-      processNextInterrupt();
+      processInterruptRef.current();
     }
   }, [personas, elapsed, speak, continuousActive, stopListening, stopVAD]);
+
+  // Keep ref in sync so setTimeout always calls latest version
+  processInterruptRef.current = processNextInterrupt;
 
   // When TTS finishes, lock for user response, then allow next interrupt
   useEffect(() => {
@@ -216,7 +220,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
           setTimeout(() => {
             if (waitingForResponseRef.current && !sessionEndedRef.current) {
               waitingForResponseRef.current = false;
-              processNextInterrupt();
+              processInterruptRef.current();
             }
           }, 8000);
         }
@@ -268,7 +272,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     if (waitingForResponseRef.current) {
       waitingForResponseRef.current = false;
       setTimeout(() => {
-        if (!sessionEndedRef.current) processNextInterrupt();
+        if (!sessionEndedRef.current) processInterruptRef.current();
       }, 1500); // Brief pause before next audience member can speak
     }
     const newMC = messageCount + 1;
@@ -353,7 +357,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
               }));
               console.log(`[Interrupt] Queued ${chosenInterrupter.personaId}, processing=${isProcessingInterruptRef.current}, waiting=${waitingForResponseRef.current}`);
               if (!isProcessingInterruptRef.current && !waitingForResponseRef.current) {
-                setTimeout(() => processNextInterrupt(), 500 + Math.random() * 1000);
+                setTimeout(() => processInterruptRef.current(), 500 + Math.random() * 1000);
               }
             } else {
               // QUEUE: show as clickable bubble above head
@@ -373,13 +377,15 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
             }
           }
 
-          // Reset reaction after a delay
-          setTimeout(() => {
-            setPersonaStates((prev) => ({
-              ...prev,
-              [r.personaId]: { ...prev[r.personaId], reaction: "neutral" },
-            }));
-          }, 3000);
+          // Reset reaction after a delay (but not for the chosen interrupter — they stay "raised-hand" or "speaking")
+          if (r !== chosenInterrupter) {
+            setTimeout(() => {
+              setPersonaStates((prev) => ({
+                ...prev,
+                [r.personaId]: { ...prev[r.personaId], reaction: "neutral" },
+              }));
+            }, 3000);
+          }
         });
       }).catch((err) => {
         console.error("LLM reaction failed, falling back to keywords:", err);
