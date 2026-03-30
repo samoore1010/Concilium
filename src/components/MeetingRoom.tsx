@@ -175,22 +175,38 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
             [r.personaId]: { reaction: r.reaction, lastHandRaiseAt: prev[r.personaId]?.lastHandRaiseAt },
           }));
 
-          // Queue comment or question as a clickable bubble — NOT directly to chat
-          const text = r.question || r.comment;
-          if (text) {
-            const queued: QueuedQuestion = {
-              id: `${r.personaId}-${Date.now()}-${Math.random()}`,
-              personaId: r.personaId,
-              question: text,
-              timestamp: Date.now(),
-            };
-            setQuestionQueue((prev) => [...prev, queued]);
-            setTimeout(() => {
+          // Handle comment/question based on interrupt behavior
+          const responseText = r.question || r.comment;
+          if (responseText) {
+            const shouldAutoPlay = behavior.allowInterruptions
+              && (r as any).shouldInterrupt === true
+              && wordCountRef.current >= behavior.interruptMinWords;
+
+            if (shouldAutoPlay) {
+              // AUTO-INTERRUPT: speak immediately without user clicking
+              setChatMessages((prev) => [...prev, { from: persona.name, text: responseText, time: elapsed }]);
+              setSpeakingPersonaId(r.personaId);
               setPersonaStates((prev) => ({
                 ...prev,
-                [r.personaId]: { ...prev[r.personaId], reaction: "raised-hand" },
+                [r.personaId]: { ...prev[r.personaId], reaction: "speaking" },
               }));
-            }, 800);
+              speak(responseText, r.personaId, getVoiceConfig(r.personaId));
+            } else {
+              // QUEUE: show as clickable bubble above head
+              const queued: QueuedQuestion = {
+                id: `${r.personaId}-${Date.now()}-${Math.random()}`,
+                personaId: r.personaId,
+                question: responseText,
+                timestamp: Date.now(),
+              };
+              setQuestionQueue((prev) => [...prev, queued]);
+              setTimeout(() => {
+                setPersonaStates((prev) => ({
+                  ...prev,
+                  [r.personaId]: { ...prev[r.personaId], reaction: "raised-hand" },
+                }));
+              }, 800);
+            }
           }
 
           // Reset reaction after a delay
@@ -449,9 +465,13 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
         {/* === MAIN AREA === */}
         <div className="flex-1 flex overflow-hidden min-h-0">
 
-          {/* AUDIENCE AREA with optional teleprompter */}
+          {/* AUDIENCE AREA with teleprompter overlay */}
           <div className="flex-1 p-2 md:p-4 min-h-0 overflow-hidden relative">
-            {/* Teleprompter overlay (left side) */}
+            <ThemedLayout theme={theme}>
+              {audienceTiles}
+            </ThemedLayout>
+
+            {/* Teleprompter overlays at bottom of audience area */}
             {scriptConfig?.text && (
               <Teleprompter
                 script={scriptConfig.text}
@@ -459,12 +479,6 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
                 onToggle={() => setShowTeleprompter(!showTeleprompter)}
               />
             )}
-
-            <div className={`h-full ${scriptConfig?.text && showTeleprompter ? "ml-[300px] md:ml-[350px]" : ""} transition-all`}>
-              <ThemedLayout theme={theme}>
-                {audienceTiles}
-              </ThemedLayout>
-            </div>
           </div>
 
           {/* === DESKTOP SIDEBAR === */}

@@ -40,14 +40,16 @@ export function AudienceTile({ persona, reaction, reactionEmoji, isActive, isMut
               e.stopPropagation();
               onQuestionClick?.(pendingQuestion);
             }}
-            className="absolute -top-2 left-1/2 -translate-x-1/2 z-20 max-w-[90%] cursor-pointer group"
+            className="absolute -top-1 left-1/2 -translate-x-1/2 z-20 w-[85%] max-w-[240px] cursor-pointer group"
           >
-            <div className="bg-white/95 text-gray-900 rounded-lg px-3 py-1.5 text-[11px] leading-tight shadow-lg shadow-black/30 border border-white/50 group-hover:bg-white transition-colors">
-              <p className="line-clamp-2 text-left">"{pendingQuestion.question}"</p>
-              <div className="text-[9px] text-blue-600 mt-0.5 font-medium">Click to hear</div>
+            <div className="bg-white/95 text-gray-900 rounded-xl px-3 py-2 text-[11px] leading-snug shadow-xl shadow-black/40 border border-white/60 group-hover:bg-white group-hover:shadow-2xl transition-all">
+              <p className="line-clamp-4 text-left">"{pendingQuestion.question}"</p>
+              <div className="text-[9px] text-blue-600 mt-1 font-semibold flex items-center gap-1">
+                <span>🔊</span> Tap to hear
+              </div>
             </div>
             {/* Speech bubble triangle */}
-            <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-3 h-3 bg-white/95 rotate-45 border-r border-b border-white/50" />
+            <div className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-3 h-3 bg-white/95 rotate-45 border-r border-b border-white/60" />
           </motion.button>
         )}
       </AnimatePresence>
