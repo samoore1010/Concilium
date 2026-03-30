@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 
 export interface SpeechMetrics {
   wordsPerMinute: number;
@@ -31,7 +31,7 @@ export function useSpeechMetrics() {
     longestPause: 0,
     vocabularyScore: 0,
   });
-  const [startTime] = useState(Date.now());
+  const startTimeRef = useRef(Date.now());
   const [lastMessageTime, setLastMessageTime] = useState(Date.now());
   const [allWords, setAllWords] = useState<string[]>([]);
   const [uniqueWords, setUniqueWords] = useState<Set<string>>(new Set());
@@ -51,7 +51,7 @@ export function useSpeechMetrics() {
       }).length;
 
       // Calculate WPM
-      const elapsedMinutes = (now - startTime) / 60000;
+      const elapsedMinutes = (now - startTimeRef.current) / 60000;
       const totalWords = allWords.length + words.length;
       const wpm = elapsedMinutes > 0 ? Math.round(totalWords / elapsedMinutes) : 0;
 
@@ -76,8 +76,16 @@ export function useSpeechMetrics() {
       setUniqueWords(newUnique);
       setLastMessageTime(now);
     },
-    [allWords, uniqueWords, startTime, lastMessageTime]
+    [allWords, uniqueWords, startTimeRef.current, lastMessageTime]
   );
 
-  return { metrics, updateMetrics };
+  const reset = useCallback(() => {
+    setMetrics({ wordsPerMinute: 0, fillerWordCount: 0, longestPause: 0, vocabularyScore: 0 });
+    setAllWords([]);
+    setUniqueWords(new Set());
+    startTimeRef.current = Date.now();
+    setLastMessageTime(Date.now());
+  }, []);
+
+  return { metrics, updateMetrics, reset };
 }
