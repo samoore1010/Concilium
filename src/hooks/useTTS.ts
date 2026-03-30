@@ -12,6 +12,7 @@ interface UseTTSReturn {
   availableProviders: string[];
   activeProvider: TTSProvider;
   setProvider: (p: TTSProvider) => void;
+  debugLog: string[];
 }
 
 export function useTTS(): UseTTSReturn {
@@ -20,31 +21,45 @@ export function useTTS(): UseTTSReturn {
   const [browserVoices, setBrowserVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [availableProviders, setAvailableProviders] = useState<string[]>([]);
   const [activeProvider, setActiveProvider] = useState<TTSProvider>("auto");
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const [debugLog, setDebugLog] = useState<string[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const apiProvidersRef = useRef<string[]>([]);
-  const audioUnlockedRef = useRef(false);
 
-  // Pre-unlock audio on first user interaction (needed for mobile auto-play)
-  useEffect(() => {
-    const unlock = () => {
-      if (audioUnlockedRef.current) return;
-      // Play a silent audio clip to unlock the audio context
-      const silentAudio = new Audio("data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAABhgC7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7//////////////////////////////////////////////////////////////////8AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAAAAYYoRBqpAAAAAAD/+1DEAAAHAAGf9AAAIgAANIAAAARMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVf/7UMQbgAADSAAAAAAAAANIAAAABFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVQ==");
-      silentAudio.volume = 0.01;
-      silentAudio.play().then(() => {
-        audioUnlockedRef.current = true;
-        console.log("[TTS] Audio context unlocked for mobile auto-play");
-      }).catch(() => {});
-    };
-    // Try to unlock on any user interaction
-    document.addEventListener("touchstart", unlock, { once: true });
-    document.addEventListener("click", unlock, { once: true });
-    return () => {
-      document.removeEventListener("touchstart", unlock);
-      document.removeEventListener("click", unlock);
-    };
+  // Persistent audio element — created once, reused for all playback
+  // This is the key to mobile: the element is "blessed" by user gesture
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
+
+  const log = useCallback((msg: string) => {
+    console.log(`[TTS] ${msg}`);
+    setDebugLog((prev) => [...prev.slice(-20), `${new Date().toLocaleTimeString()}: ${msg}`]);
   }, []);
+
+  // Create the persistent audio element on mount
+  useEffect(() => {
+    const el = document.createElement("audio");
+    el.setAttribute("playsinline", "true");
+    el.setAttribute("webkit-playsinline", "true");
+    audioElRef.current = el;
+    log("Audio element created");
+
+    // Pre-warm it on first user gesture
+    const warmUp = () => {
+      if (audioElRef.current) {
+        // Play silent audio to "bless" the element
+        audioElRef.current.src = "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAABhgC7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7u7//////////////////////////////////////////////////////////////////8AAAAATGF2YzU4LjEzAAAAAAAAAAAAAAAAJAAAAAAAAAAAAYYoRBqpAAAAAAD/+1DEAAAHAAGf9AAAIgAANIAAAARMQU1FMy4xMDBVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVf/7UMQbgAADSAAAAAAAAANIAAAABFVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVVQ==";
+        audioElRef.current.volume = 0.01;
+        audioElRef.current.play().then(() => {
+          log("Audio element blessed by user gesture");
+        }).catch(() => {});
+      }
+    };
+    document.addEventListener("touchstart", warmUp, { once: true });
+    document.addEventListener("click", warmUp, { once: true });
+    return () => {
+      document.removeEventListener("touchstart", warmUp);
+      document.removeEventListener("click", warmUp);
+    };
+  }, [log]);
 
   // Discover available providers
   useEffect(() => {
@@ -54,16 +69,10 @@ export function useTTS(): UseTTSReturn {
         const providers = data.ttsProviders || [];
         apiProvidersRef.current = providers;
         setAvailableProviders(providers);
-        if (providers.length > 0) {
-          console.log(`[TTS] Available providers: ${providers.join(", ")}`);
-        } else {
-          console.log("[TTS] No API providers — using browser voices");
-        }
+        log(`Providers: ${providers.length > 0 ? providers.join(", ") : "none (browser only)"}`);
       })
-      .catch(() => {
-        console.log("[TTS] Health check failed — using browser voices");
-      });
-  }, []);
+      .catch(() => log("Health check failed"));
+  }, [log]);
 
   // Load browser voices
   useEffect(() => {
@@ -79,7 +88,11 @@ export function useTTS(): UseTTSReturn {
 
   const stopCurrent = useCallback(() => {
     if (abortRef.current) { abortRef.current.abort(); abortRef.current = null; }
-    if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; audioRef.current = null; }
+    if (audioElRef.current) {
+      audioElRef.current.pause();
+      audioElRef.current.currentTime = 0;
+      audioElRef.current.src = "";
+    }
     if (typeof window !== "undefined" && window.speechSynthesis) speechSynthesis.cancel();
     setIsSpeaking(false);
     setSpeakingText("");
@@ -106,19 +119,16 @@ export function useTTS(): UseTTSReturn {
     if (!text) return;
     stopCurrent();
 
-    // Determine which provider to use
     const providers = apiProvidersRef.current;
     let useApi: string | null = null;
 
     if (activeProvider === "browser") {
-      // Explicitly chose browser
       useApi = null;
     } else if (activeProvider === "elevenlabs" && providers.includes("elevenlabs")) {
       useApi = "elevenlabs";
     } else if (activeProvider === "openai" && providers.includes("openai")) {
       useApi = "openai";
     } else if (activeProvider === "auto") {
-      // Auto: prefer elevenlabs > openai > browser
       if (providers.includes("elevenlabs")) useApi = "elevenlabs";
       else if (providers.includes("openai")) useApi = "openai";
     }
@@ -130,7 +140,7 @@ export function useTTS(): UseTTSReturn {
       const controller = new AbortController();
       abortRef.current = controller;
 
-      console.log(`[TTS] Using ${useApi} for ${personaId || "unknown"}`);
+      log(`Fetching ${useApi} audio for ${personaId || "unknown"}...`);
 
       fetch("/api/tts", {
         method: "POST",
@@ -139,29 +149,49 @@ export function useTTS(): UseTTSReturn {
         signal: controller.signal,
       })
         .then((res) => {
-          if (!res.ok) throw new Error(`TTS API returned ${res.status}`);
+          if (!res.ok) throw new Error(`API returned ${res.status}`);
           return res.blob();
         })
         .then((blob) => {
           const url = URL.createObjectURL(blob);
-          const audio = new Audio(url);
-          audioRef.current = audio;
-          audio.onended = () => { setIsSpeaking(false); setSpeakingText(""); URL.revokeObjectURL(url); audioRef.current = null; };
-          audio.onerror = () => { setIsSpeaking(false); setSpeakingText(""); URL.revokeObjectURL(url); audioRef.current = null; };
-          return audio.play();
+          log(`Got audio blob (${blob.size} bytes), playing...`);
+
+          // Use the persistent pre-blessed audio element
+          const audio = audioElRef.current;
+          if (!audio) throw new Error("No audio element");
+
+          audio.src = url;
+          audio.volume = 1.0;
+
+          audio.onended = () => {
+            setIsSpeaking(false);
+            setSpeakingText("");
+            URL.revokeObjectURL(url);
+            log("Playback finished");
+          };
+          audio.onerror = (e) => {
+            log(`Playback error: ${(e as any)?.message || "unknown"}`);
+            setIsSpeaking(false);
+            setSpeakingText("");
+            URL.revokeObjectURL(url);
+          };
+
+          return audio.play().then(() => {
+            log("Playing audio successfully");
+          });
         })
         .catch((err) => {
           if (err.name === "AbortError") return;
-          console.error(`[TTS] ${useApi} failed, falling back to browser:`, err.message);
+          log(`FAILED: ${err.message}, falling back to browser TTS`);
           speakWithBrowser(text, voiceConfig);
         });
     } else {
-      console.log("[TTS] Using browser voice");
+      log("Using browser voice");
       setIsSpeaking(true);
       setSpeakingText(text);
       speakWithBrowser(text, voiceConfig);
     }
-  }, [stopCurrent, speakWithBrowser, activeProvider]);
+  }, [stopCurrent, speakWithBrowser, activeProvider, log]);
 
   return {
     speak,
@@ -172,5 +202,6 @@ export function useTTS(): UseTTSReturn {
     availableProviders,
     activeProvider,
     setProvider: setActiveProvider,
+    debugLog,
   };
 }
