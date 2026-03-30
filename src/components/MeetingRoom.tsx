@@ -56,14 +56,15 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
 
   const [showTeleprompter, setShowTeleprompter] = useState(!!scriptConfig?.text);
   const [continuousActive, setContinuousActive] = useState(false);
-  const pendingTextRef = useRef("");
   const wordCountRef = useRef(0);
+  const interruptQueueRef = useRef<Array<{ personaId: string; text: string }>>([]);
+  const isProcessingInterruptRef = useRef(false);
 
   const theme = getTheme(sessionType);
   const behavior = getSessionBehavior(sessionType);
 
   const { isActive: isCameraActive, startCamera, stopCamera, attachVideo } = useCamera();
-  const { transcript: speechTranscript, isListening, startListening, stopListening } = useSpeechRecognition();
+  const { transcript: speechTranscript, isListening, startListening, stopListening, consumeNewText } = useSpeechRecognition();
   const { metrics: speechMetrics, updateMetrics } = useSpeechMetrics();
   const { metrics: prosodyMetrics, isAnalyzing: isProsodyActive, startAnalysis: startProsody, stopAnalysis: stopProsody } = useProsody();
   const { speak, stop: stopTTS, isSpeaking, availableProviders, activeProvider, setProvider } = useTTS();
@@ -74,24 +75,16 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     checkLLMAvailability().then(setLlmAvailable);
   }, []);
 
-  // Continuous mode: accumulate speech text and auto-send on silence
-  useEffect(() => {
-    if (speechTranscript && speechTranscript.length > 0 && continuousActive) {
-      pendingTextRef.current = speechTranscript;
-    }
-  }, [speechTranscript, continuousActive]);
-
-  // VAD silence callback — auto-send accumulated text
+  // Continuous mode: use consumeNewText to get only NEW speech since last send
   useEffect(() => {
     if (!continuousActive) return;
     onSilenceThreshold(() => {
-      const text = pendingTextRef.current.trim();
-      if (text.length > 0) {
-        processUserInput(text);
-        pendingTextRef.current = "";
+      const newText = consumeNewText();
+      if (newText.length > 0) {
+        processUserInput(newText);
       }
     });
-  }, [continuousActive, onSilenceThreshold]);
+  }, [continuousActive, onSilenceThreshold, consumeNewText]);
 
   const startContinuousMode = useCallback(() => {
     setContinuousActive(true);
@@ -107,6 +100,29 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     stopVAD();
   }, [stopListening, stopProsody, stopVAD]);
 
+  // Process interrupt queue sequentially
+  const processNextInterrupt = useCallback(() => {
+    if (isProcessingInterruptRef.current) return;
+    const next = interruptQueueRef.current.shift();
+    if (!next) return;
+
+    isProcessingInterruptRef.current = true;
+    const persona = personas.find((p) => p.id === next.personaId);
+    if (persona) {
+      setChatMessages((prev) => [...prev, { from: persona.name, text: next.text, time: elapsed }]);
+      setSpeakingPersonaId(next.personaId);
+      setPersonaStates((prev) => ({
+        ...prev,
+        [next.personaId]: { ...prev[next.personaId], reaction: "speaking" },
+      }));
+      speak(next.text, next.personaId, getVoiceConfig(next.personaId));
+    } else {
+      isProcessingInterruptRef.current = false;
+      processNextInterrupt();
+    }
+  }, [personas, elapsed, speak]);
+
+  // When TTS finishes, reset speaking state and process next interrupt
   useEffect(() => {
     if (!isSpeaking && speakingPersonaId) {
       const timer = setTimeout(() => {
@@ -115,14 +131,20 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
           [speakingPersonaId]: { ...prev[speakingPersonaId], reaction: "neutral" },
         }));
         setSpeakingPersonaId(null);
+        isProcessingInterruptRef.current = false;
+        // Process next queued interrupt after a short pause
+        setTimeout(() => processNextInterrupt(), 500);
       }, 300);
       return () => clearTimeout(timer);
     }
-  }, [isSpeaking, speakingPersonaId]);
+  }, [isSpeaking, speakingPersonaId, processNextInterrupt]);
 
+  // Only sync speech to text input when NOT in continuous mode (manual send mode)
   useEffect(() => {
-    if (speechTranscript && speechTranscript.length > 0) setInputText(speechTranscript);
-  }, [speechTranscript]);
+    if (!continuousActive && speechTranscript && speechTranscript.length > 0) {
+      setInputText(speechTranscript);
+    }
+  }, [speechTranscript, continuousActive]);
 
   useEffect(() => {
     timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
@@ -183,14 +205,17 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
               && wordCountRef.current >= behavior.interruptMinWords;
 
             if (shouldAutoPlay) {
-              // AUTO-INTERRUPT: speak immediately without user clicking
-              setChatMessages((prev) => [...prev, { from: persona.name, text: responseText, time: elapsed }]);
-              setSpeakingPersonaId(r.personaId);
+              // AUTO-INTERRUPT: queue for sequential playback
+              interruptQueueRef.current.push({ personaId: r.personaId, text: responseText });
+              // Show raised hand while waiting in queue
               setPersonaStates((prev) => ({
                 ...prev,
-                [r.personaId]: { ...prev[r.personaId], reaction: "speaking" },
+                [r.personaId]: { ...prev[r.personaId], reaction: "raised-hand" },
               }));
-              speak(responseText, r.personaId, getVoiceConfig(r.personaId));
+              // Trigger processing if not already running
+              if (!isProcessingInterruptRef.current) {
+                setTimeout(() => processNextInterrupt(), 300 + Math.random() * 700);
+              }
             } else {
               // QUEUE: show as clickable bubble above head
               const queued: QueuedQuestion = {
@@ -563,32 +588,22 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
           )}
         </AnimatePresence>
 
-        {/* === MOBILE SELF-VIEW (small corner above input) === */}
-        <div className="md:hidden absolute bottom-[52px] right-2 z-20">
-          {selfView("w-20 h-14")}
-        </div>
-
         {/* === BOTTOM BAR === */}
-        <div className="border-t border-white/5 bg-black/40 px-2 md:px-4 py-1.5 md:py-3 flex-shrink-0">
-          <div className="max-w-3xl mx-auto flex gap-1.5 md:gap-2 items-center">
-            {/* Toolbar buttons */}
+        <div className="border-t border-white/5 bg-black/50 backdrop-blur-sm px-2 md:px-4 py-1 md:py-2 flex-shrink-0 safe-bottom">
+          <div className="max-w-3xl mx-auto flex gap-1 md:gap-2 items-center">
             <ToolbarBtn icon="mic" active={isListening} color={theme.accentColor} onClick={() => {
               if (isListening) { stopListening(); stopProsody(); }
               else { startListening(); startProsody(); }
             }} />
             <ToolbarBtn icon="video" active={isCameraActive} color={theme.accentColor} onClick={() => isCameraActive ? stopCamera() : startCamera()} />
-
-            {/* Mobile: panel toggle buttons */}
             <button
               onClick={() => setMobilePanel(mobilePanel ? null : "chat")}
-              className="md:hidden w-8 h-8 flex items-center justify-center rounded-full bg-white/5 text-white/50 hover:text-white/80 relative"
+              className="md:hidden w-7 h-7 flex items-center justify-center rounded-full bg-white/5 text-white/50 relative"
             >
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M2.5 2A1.5 1.5 0 001 3.5v8A1.5 1.5 0 002.5 13H4l4 3v-3h4.5a1.5 1.5 0 001.5-1.5v-8A1.5 1.5 0 0012.5 2h-10z" />
               </svg>
-              {(chatMessages.length > 0 || questionQueue.length > 0) && (
-                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-red-500" />
-              )}
+              {questionQueue.length > 0 && <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-red-500" />}
             </button>
 
             {/* Continuous mode: live indicator or text input */}
@@ -596,7 +611,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
               <div className="flex-1 flex items-center gap-2 px-3 py-1.5 md:py-2 bg-white/5 border border-purple-500/30 rounded-lg">
                 <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
                 <span className="text-xs text-white/50 truncate">
-                  {pendingTextRef.current ? pendingTextRef.current.substring(pendingTextRef.current.length - 60) : "Listening..."}
+                  {speechTranscript ? speechTranscript.substring(Math.max(0, speechTranscript.length - 60)) : "Listening..."}
                 </span>
               </div>
             ) : (
