@@ -13,29 +13,33 @@ interface UseTTSReturn {
 export function useTTS(): UseTTSReturn {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [speakingText, setSpeakingText] = useState("");
-  const [supported, setSupported] = useState(true);
-  const [ttsApiAvailable, setTtsApiAvailable] = useState(false);
   const [browserVoices, setBrowserVoices] = useState<SpeechSynthesisVoice[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const ttsAvailableRef = useRef(false);
+  const [usingApi, setUsingApi] = useState(false);
 
+  // Check TTS availability once on mount
   useEffect(() => {
     fetch("/api/health")
       .then((r) => r.json())
       .then((data) => {
         if (data.ttsAvailable === true) {
-          setTtsApiAvailable(true);
-          console.log("OpenAI TTS available");
+          ttsAvailableRef.current = true;
+          setUsingApi(true);
+          console.log("[TTS] OpenAI TTS available — will use natural voices");
+        } else {
+          console.log("[TTS] OpenAI TTS not available — using browser voices");
         }
       })
-      .catch(() => setTtsApiAvailable(false));
+      .catch((err) => {
+        console.log("[TTS] Health check failed, using browser voices:", err.message);
+      });
   }, []);
 
+  // Load browser voices as fallback
   useEffect(() => {
-    if (typeof window === "undefined" || !window.speechSynthesis) {
-      setSupported(ttsApiAvailable);
-      return;
-    }
+    if (typeof window === "undefined" || !window.speechSynthesis) return;
     const loadVoices = () => {
       const available = speechSynthesis.getVoices();
       if (available.length > 0) setBrowserVoices(available);
@@ -46,61 +50,23 @@ export function useTTS(): UseTTSReturn {
       speechSynthesis.removeEventListener("voiceschanged", loadVoices);
       speechSynthesis.cancel();
     };
-  }, [ttsApiAvailable]);
+  }, []);
 
-  const speakWithApi = useCallback(
-    async (text: string, personaId?: string, voiceConfig?: VoiceConfig) => {
-      const controller = new AbortController();
-      abortRef.current = controller;
-
-      setIsSpeaking(true);
-      setSpeakingText(text);
-
-      try {
-        const res = await fetch("/api/tts", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            text,
-            personaId: personaId || undefined,
-            speed: voiceConfig?.speed || 1.0,
-          }),
-          signal: controller.signal,
-        });
-
-        if (!res.ok) throw new Error(`TTS API returned ${res.status}`);
-
-        const blob = await res.blob();
-        const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
-        audioRef.current = audio;
-
-        audio.onended = () => {
-          setIsSpeaking(false);
-          setSpeakingText("");
-          URL.revokeObjectURL(url);
-          audioRef.current = null;
-        };
-        audio.onerror = () => {
-          setIsSpeaking(false);
-          setSpeakingText("");
-          URL.revokeObjectURL(url);
-          audioRef.current = null;
-        };
-
-        await audio.play();
-      } catch (err: any) {
-        if (err.name === "AbortError") return;
-        console.error("API TTS failed, falling back to browser:", err);
-        speakWithBrowser(text, voiceConfig);
-      }
-    },
-    []
-  );
+  const stopCurrent = useCallback(() => {
+    if (abortRef.current) { abortRef.current.abort(); abortRef.current = null; }
+    if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; audioRef.current = null; }
+    if (typeof window !== "undefined" && window.speechSynthesis) speechSynthesis.cancel();
+    setIsSpeaking(false);
+    setSpeakingText("");
+  }, []);
 
   const speakWithBrowser = useCallback(
     (text: string, voiceConfig?: VoiceConfig) => {
-      if (!window.speechSynthesis) return;
+      if (!window.speechSynthesis) {
+        setIsSpeaking(false);
+        setSpeakingText("");
+        return;
+      }
       speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(text);
       if (voiceConfig) {
@@ -122,29 +88,75 @@ export function useTTS(): UseTTSReturn {
     (text: string, personaId?: string, voiceConfig?: VoiceConfig) => {
       if (!text) return;
       stopCurrent();
-      if (ttsApiAvailable) {
-        speakWithApi(text, personaId, voiceConfig);
+
+      // Use ref (not state) to avoid stale closure issues
+      if (ttsAvailableRef.current) {
+        // === API TTS ===
+        setIsSpeaking(true);
+        setSpeakingText(text);
+
+        const controller = new AbortController();
+        abortRef.current = controller;
+
+        console.log(`[TTS] Requesting API voice for ${personaId || "unknown"}: "${text.substring(0, 50)}..."`);
+
+        fetch("/api/tts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            text,
+            personaId: personaId || undefined,
+            speed: voiceConfig?.speed || 1.0,
+          }),
+          signal: controller.signal,
+        })
+          .then((res) => {
+            if (!res.ok) throw new Error(`TTS API returned ${res.status}`);
+            return res.blob();
+          })
+          .then((blob) => {
+            const url = URL.createObjectURL(blob);
+            const audio = new Audio(url);
+            audioRef.current = audio;
+
+            audio.onended = () => {
+              setIsSpeaking(false);
+              setSpeakingText("");
+              URL.revokeObjectURL(url);
+              audioRef.current = null;
+            };
+            audio.onerror = (e) => {
+              console.error("[TTS] Audio playback error:", e);
+              setIsSpeaking(false);
+              setSpeakingText("");
+              URL.revokeObjectURL(url);
+              audioRef.current = null;
+            };
+
+            return audio.play();
+          })
+          .catch((err) => {
+            if (err.name === "AbortError") return;
+            console.error("[TTS] API failed, falling back to browser:", err.message);
+            speakWithBrowser(text, voiceConfig);
+          });
       } else {
+        // === Browser TTS fallback ===
+        console.log("[TTS] Using browser voice");
+        setIsSpeaking(true);
+        setSpeakingText(text);
         speakWithBrowser(text, voiceConfig);
       }
     },
-    [ttsApiAvailable, speakWithApi, speakWithBrowser]
+    [stopCurrent, speakWithBrowser]
   );
-
-  const stopCurrent = useCallback(() => {
-    if (abortRef.current) { abortRef.current.abort(); abortRef.current = null; }
-    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
-    if (window.speechSynthesis) speechSynthesis.cancel();
-    setIsSpeaking(false);
-    setSpeakingText("");
-  }, []);
 
   return {
     speak,
     stop: stopCurrent,
     isSpeaking,
     speakingText,
-    supported: supported || ttsApiAvailable,
-    usingApiVoice: ttsApiAvailable,
+    supported: true,
+    usingApiVoice: usingApi,
   };
 }
