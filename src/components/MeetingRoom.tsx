@@ -55,7 +55,7 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
   const { transcript: speechTranscript, isListening, startListening, stopListening } = useSpeechRecognition();
   const { metrics: speechMetrics, updateMetrics } = useSpeechMetrics();
   const { metrics: prosodyMetrics, isAnalyzing: isProsodyActive, startAnalysis: startProsody, stopAnalysis: stopProsody } = useProsody();
-  const { speak, stop: stopTTS, isSpeaking } = useTTS();
+  const { speak, stop: stopTTS, isSpeaking, availableProviders, activeProvider, setProvider } = useTTS();
 
   // Check if LLM backend is available on mount
   useEffect(() => {
@@ -432,6 +432,7 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
               speakingPersonaId={speakingPersonaId} ttsEnabled={ttsEnabled}
               speechMetrics={speechMetrics} prosodyMetrics={prosodyMetrics} chatMessages={chatMessages} chatEndRef={chatEndRef}
               onListen={handleListenToQuestion} onRead={handleReadQuestion}
+              availableProviders={availableProviders} activeProvider={activeProvider} onProviderChange={setProvider}
               onDismiss={(id) => setQuestionQueue((prev) => prev.filter((q) => q.id !== id))}
               onToggleTTS={() => setTtsEnabled(!ttsEnabled)}
             />
@@ -535,7 +536,7 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
 }
 
 // === TAB CONTENT (shared by desktop sidebar + mobile bottom sheet) ===
-function TabContent({ sideTab, questionQueue, personas, speakingPersonaId, ttsEnabled, speechMetrics, prosodyMetrics, chatMessages, chatEndRef, onListen, onRead, onDismiss, onToggleTTS }: {
+function TabContent({ sideTab, questionQueue, personas, speakingPersonaId, ttsEnabled, speechMetrics, prosodyMetrics, chatMessages, chatEndRef, availableProviders, activeProvider, onProviderChange, onListen, onRead, onDismiss, onToggleTTS }: {
   sideTab: SideTab;
   questionQueue: QueuedQuestion[]; personas: Persona[]; speakingPersonaId: string | null;
   ttsEnabled: boolean;
@@ -543,6 +544,7 @@ function TabContent({ sideTab, questionQueue, personas, speakingPersonaId, ttsEn
   prosodyMetrics: { currentVolume: number; averageVolume: number; volumeVariation: number; pitchVariation: number; energyLevel: number; silenceRatio: number };
   chatMessages: { from: string; text: string; time: number }[];
   chatEndRef: React.RefObject<HTMLDivElement | null>;
+  availableProviders?: string[]; activeProvider?: string; onProviderChange?: (p: any) => void;
   onListen: (q: QueuedQuestion) => void; onRead: (q: QueuedQuestion) => void;
   onDismiss: (id: string) => void; onToggleTTS: () => void;
 }) {
@@ -570,7 +572,8 @@ function TabContent({ sideTab, questionQueue, personas, speakingPersonaId, ttsEn
     return (
       <QuestionQueue
         questions={questionQueue} personas={personas} speakingPersonaId={speakingPersonaId}
-        ttsEnabled={ttsEnabled} onListen={onListen} onRead={onRead} onDismiss={onDismiss} onToggleTTS={onToggleTTS}
+        ttsEnabled={ttsEnabled} availableProviders={availableProviders} activeProvider={activeProvider as any} onProviderChange={onProviderChange}
+        onListen={onListen} onRead={onRead} onDismiss={onDismiss} onToggleTTS={onToggleTTS}
       />
     );
   }

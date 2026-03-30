@@ -12,66 +12,87 @@ const __dirname = path.dirname(__filename);
 const app = express();
 app.use(cors());
 app.use(express.json());
-
-// Serve static files from dist/
 app.use(express.static(path.join(__dirname, "../dist")));
 
-// Lazy-init Anthropic client
+// === Provider Init ===
+
 let anthropic: Anthropic | null = null;
 function getClient(): Anthropic | null {
   if (!process.env.ANTHROPIC_API_KEY) return null;
-  if (!anthropic) {
-    anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
-  }
+  if (!anthropic) anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   return anthropic;
 }
 
-// Lazy-init OpenAI client (for TTS)
 let openai: OpenAI | null = null;
 function getOpenAI(): OpenAI | null {
   if (!process.env.OPENAI_API_KEY) return null;
-  if (!openai) {
-    openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  }
+  if (!openai) openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
   return openai;
 }
 
-// OpenAI TTS voice mapping per persona
-const PERSONA_VOICES: Record<string, string> = {
-  "maria-chen": "nova",       // warm, professional female
-  "james-wilson": "onyx",     // deep, authoritative male
-  "aisha-johnson": "shimmer", // clear, confident female
-  "carlos-reyes": "echo",     // warm, energetic male
-  "patricia-omalley": "fable",// warm, gentle (British-tinged)
-  "dev-patel": "alloy",       // neutral, direct male
+// === Voice Mappings ===
+
+const OPENAI_VOICES: Record<string, string> = {
+  "maria-chen": "nova",
+  "james-wilson": "onyx",
+  "aisha-johnson": "shimmer",
+  "carlos-reyes": "echo",
+  "patricia-omalley": "fable",
+  "dev-patel": "alloy",
 };
 
-// === API Routes ===
+const ELEVENLABS_VOICES: Record<string, string> = {
+  "maria-chen": "21m00Tcm4TlvDq8ikWAM",      // Rachel
+  "james-wilson": "VR6AewLTigWG4xSOukaG",     // Arnold
+  "aisha-johnson": "EXAVITQu4vr4xnSDxMaL",   // Bella
+  "carlos-reyes": "ErXwobaYiN019PkySvjV",     // Antoni
+  "patricia-omalley": "MF3mGyEYCl7XYWbV9V6O", // Elli
+  "dev-patel": "TxGEqnHWrfWFTfGW9XjX",       // Josh
+};
 
-// Health check
+// === Health Check ===
+
 app.get("/api/health", (_req, res) => {
+  const ttsProviders: string[] = [];
+  if (process.env.OPENAI_API_KEY) ttsProviders.push("openai");
+  if (process.env.ELEVENLABS_API_KEY) ttsProviders.push("elevenlabs");
+
   res.json({
     status: "ok",
     llmAvailable: !!process.env.ANTHROPIC_API_KEY,
-    ttsAvailable: !!process.env.OPENAI_API_KEY,
+    ttsAvailable: ttsProviders.length > 0,
+    ttsProviders,
   });
 });
 
-// Text-to-Speech via OpenAI
+// === TTS Endpoint (multi-provider) ===
+
 app.post("/api/tts", async (req, res) => {
-  const client = getOpenAI();
-  if (!client) {
-    return res.status(503).json({ error: "TTS not configured. Set OPENAI_API_KEY." });
+  const { text, personaId, speed, provider } = req.body;
+  if (!text) return res.status(400).json({ error: "text required" });
+
+  const requested = provider || "auto";
+
+  // ElevenLabs (premium) — preferred when explicitly requested or auto with key
+  if ((requested === "elevenlabs" || requested === "auto") && process.env.ELEVENLABS_API_KEY) {
+    return ttsElevenLabs(text, personaId, res);
   }
 
-  const { text, personaId, speed } = req.body;
-  if (!text) {
-    return res.status(400).json({ error: "text required" });
+  // OpenAI — standard
+  if ((requested === "openai" || requested === "auto") && process.env.OPENAI_API_KEY) {
+    return ttsOpenAI(text, personaId, speed, res);
   }
+
+  return res.status(503).json({ error: "No TTS provider configured." });
+});
+
+async function ttsOpenAI(text: string, personaId: string, speed: number, res: any) {
+  const client = getOpenAI();
+  if (!client) return res.status(503).json({ error: "OpenAI not configured" });
 
   try {
-    const voice = (PERSONA_VOICES[personaId] || "alloy") as "alloy" | "echo" | "fable" | "onyx" | "nova" | "shimmer";
-    console.log(`[TTS] Generating voice="${voice}" for persona="${personaId}", text="${text.substring(0, 50)}..."`);
+    const voice = (OPENAI_VOICES[personaId] || "alloy") as "alloy" | "echo" | "fable" | "onyx" | "nova" | "shimmer";
+    console.log(`[TTS:OpenAI] voice="${voice}" persona="${personaId}"`);
 
     const response = await client.audio.speech.create({
       model: "tts-1",
@@ -82,46 +103,75 @@ app.post("/api/tts", async (req, res) => {
     });
 
     const buffer = Buffer.from(await response.arrayBuffer());
-
-    res.set({
-      "Content-Type": "audio/mpeg",
-      "Content-Length": buffer.length.toString(),
-      "Cache-Control": "public, max-age=3600",
-    });
+    res.set({ "Content-Type": "audio/mpeg", "Content-Length": buffer.length.toString(), "Cache-Control": "public, max-age=3600" });
     res.send(buffer);
   } catch (error: any) {
-    console.error("TTS error:", error.message);
-    res.status(500).json({ error: "Failed to generate speech", detail: error.message });
+    console.error("[TTS:OpenAI] Error:", error.message);
+    res.status(500).json({ error: "OpenAI TTS failed", detail: error.message });
   }
-});
+}
 
-// Real-time reaction for a single persona
+async function ttsElevenLabs(text: string, personaId: string, res: any) {
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+  if (!apiKey) return res.status(503).json({ error: "ElevenLabs not configured" });
+
+  try {
+    const voiceId = ELEVENLABS_VOICES[personaId] || "21m00Tcm4TlvDq8ikWAM";
+    console.log(`[TTS:ElevenLabs] voiceId="${voiceId}" persona="${personaId}"`);
+
+    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+      method: "POST",
+      headers: {
+        "xi-api-key": apiKey,
+        "Content-Type": "application/json",
+        "Accept": "audio/mpeg",
+      },
+      body: JSON.stringify({
+        text,
+        model_id: "eleven_turbo_v2_5",
+        voice_settings: {
+          stability: 0.5,
+          similarity_boost: 0.75,
+          style: 0.3,
+          use_speaker_boost: true,
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const errText = await response.text();
+      console.error(`[TTS:ElevenLabs] API error ${response.status}:`, errText);
+      throw new Error(`ElevenLabs API returned ${response.status}`);
+    }
+
+    const buffer = Buffer.from(await response.arrayBuffer());
+    res.set({ "Content-Type": "audio/mpeg", "Content-Length": buffer.length.toString(), "Cache-Control": "public, max-age=3600" });
+    res.send(buffer);
+  } catch (error: any) {
+    console.error("[TTS:ElevenLabs] Error:", error.message);
+    res.status(500).json({ error: "ElevenLabs TTS failed", detail: error.message });
+  }
+}
+
+// === LLM Reaction Endpoints ===
+
 app.post("/api/react", async (req, res) => {
   const client = getClient();
-  if (!client) {
-    return res.status(503).json({ error: "LLM not configured. Set ANTHROPIC_API_KEY." });
-  }
+  if (!client) return res.status(503).json({ error: "LLM not configured." });
 
   const { personaId, userText, sessionType, messageHistory } = req.body;
-  if (!personaId || !userText) {
-    return res.status(400).json({ error: "personaId and userText required" });
-  }
+  if (!personaId || !userText) return res.status(400).json({ error: "personaId and userText required" });
 
   try {
     const persona = getPersonaPrompt(personaId);
     const prompt = buildReactionPrompt(persona, userText, sessionType || "business-pitch", messageHistory || []);
-
     const message = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 300,
-      system: persona.systemPrompt,
-      messages: [{ role: "user", content: prompt }],
+      model: "claude-haiku-4-5-20251001", max_tokens: 300,
+      system: persona.systemPrompt, messages: [{ role: "user", content: prompt }],
     });
-
     const text = message.content[0].type === "text" ? message.content[0].text : "";
     const parsed = safeParseJSON(text);
-    if (!parsed) throw new Error("Failed to parse JSON response");
-
+    if (!parsed) throw new Error("Failed to parse JSON");
     res.json(parsed);
   } catch (error: any) {
     console.error("Reaction error:", error.message);
@@ -129,46 +179,31 @@ app.post("/api/react", async (req, res) => {
   }
 });
 
-// Batch reactions for all personas at once
 app.post("/api/react-batch", async (req, res) => {
   const client = getClient();
-  if (!client) {
-    return res.status(503).json({ error: "LLM not configured. Set ANTHROPIC_API_KEY." });
-  }
+  if (!client) return res.status(503).json({ error: "LLM not configured." });
 
   const { personaIds, userText, sessionType, messageHistory } = req.body;
-  if (!personaIds?.length || !userText) {
-    return res.status(400).json({ error: "personaIds and userText required" });
-  }
+  if (!personaIds?.length || !userText) return res.status(400).json({ error: "personaIds and userText required" });
 
   try {
-    // Fire all persona reactions in parallel
     const results = await Promise.allSettled(
       personaIds.map(async (personaId: string) => {
         const persona = getPersonaPrompt(personaId);
         const prompt = buildReactionPrompt(persona, userText, sessionType || "business-pitch", messageHistory || []);
-
         const message = await client.messages.create({
-          model: "claude-haiku-4-5-20251001",
-          max_tokens: 300,
-          system: persona.systemPrompt,
-          messages: [{ role: "user", content: prompt }],
+          model: "claude-haiku-4-5-20251001", max_tokens: 300,
+          system: persona.systemPrompt, messages: [{ role: "user", content: prompt }],
         });
-
         const text = message.content[0].type === "text" ? message.content[0].text : "";
-        const jsonStr = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-        return { personaId, ...JSON.parse(jsonStr) };
+        const parsed = safeParseJSON(text);
+        if (!parsed) throw new Error("Failed to parse JSON");
+        return { personaId, ...parsed };
       })
     );
 
-    const reactions = results
-      .filter((r): r is PromiseFulfilledResult<any> => r.status === "fulfilled")
-      .map((r) => r.value);
-
-    const errors = results
-      .filter((r): r is PromiseRejectedResult => r.status === "rejected")
-      .map((r, i) => ({ personaId: personaIds[i], error: r.reason?.message }));
-
+    const reactions = results.filter((r): r is PromiseFulfilledResult<any> => r.status === "fulfilled").map((r) => r.value);
+    const errors = results.filter((r): r is PromiseRejectedResult => r.status === "rejected").map((r, i) => ({ personaId: personaIds[i], error: r.reason?.message }));
     res.json({ reactions, errors });
   } catch (error: any) {
     console.error("Batch reaction error:", error.message);
@@ -176,39 +211,29 @@ app.post("/api/react-batch", async (req, res) => {
   }
 });
 
-// Post-session feedback for a single persona
+// === LLM Feedback Endpoints ===
+
 app.post("/api/feedback", async (req, res) => {
   const client = getClient();
-  if (!client) {
-    return res.status(503).json({ error: "LLM not configured. Set ANTHROPIC_API_KEY." });
-  }
+  if (!client) return res.status(503).json({ error: "LLM not configured." });
 
   const { personaId, transcript, sessionType } = req.body;
-  if (!personaId || !transcript) {
-    return res.status(400).json({ error: "personaId and transcript required" });
-  }
+  if (!personaId || !transcript) return res.status(400).json({ error: "personaId and transcript required" });
 
   try {
     const persona = getPersonaPrompt(personaId);
     const prompt = buildFeedbackPrompt(persona, transcript, sessionType || "business-pitch");
-
     console.log(`[Feedback] Generating for ${personaId}...`);
 
     const message = await client.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 1500,
-      system: persona.systemPrompt,
-      messages: [{ role: "user", content: prompt }],
+      model: "claude-sonnet-4-6", max_tokens: 1500,
+      system: persona.systemPrompt, messages: [{ role: "user", content: prompt }],
     });
 
     const text = message.content[0].type === "text" ? message.content[0].text : "";
-    console.log(`[Feedback] Raw response for ${personaId}: ${text.substring(0, 100)}...`);
-
+    console.log(`[Feedback] Raw for ${personaId}: ${text.substring(0, 100)}...`);
     const parsed = safeParseJSON(text);
-    if (!parsed) {
-      console.error(`[Feedback] Failed to parse JSON for ${personaId}`);
-      return res.status(500).json({ error: "Failed to parse LLM response" });
-    }
+    if (!parsed) return res.status(500).json({ error: "Failed to parse LLM response" });
 
     console.log(`[Feedback] Success for ${personaId}: score ${parsed.overallScore}`);
     res.json({ personaId, personaName: personaId, ...parsed });
@@ -218,45 +243,32 @@ app.post("/api/feedback", async (req, res) => {
   }
 });
 
-// Batch feedback for all personas
 app.post("/api/feedback-batch", async (req, res) => {
   const client = getClient();
-  if (!client) {
-    return res.status(503).json({ error: "LLM not configured. Set ANTHROPIC_API_KEY." });
-  }
+  if (!client) return res.status(503).json({ error: "LLM not configured." });
 
   const { personaIds, transcript, sessionType } = req.body;
-  if (!personaIds?.length || !transcript) {
-    return res.status(400).json({ error: "personaIds and transcript required" });
-  }
+  if (!personaIds?.length || !transcript) return res.status(400).json({ error: "personaIds and transcript required" });
 
   try {
-    // Process sequentially to avoid rate limits with 6 Sonnet calls
     const feedback: any[] = [];
-
     for (const personaId of personaIds) {
       try {
         const persona = getPersonaPrompt(personaId);
         const prompt = buildFeedbackPrompt(persona, transcript, sessionType || "business-pitch");
-
         const message = await client.messages.create({
-          model: "claude-sonnet-4-6",
-          max_tokens: 1500,
-          system: persona.systemPrompt,
-          messages: [{ role: "user", content: prompt }],
+          model: "claude-sonnet-4-6", max_tokens: 1500,
+          system: persona.systemPrompt, messages: [{ role: "user", content: prompt }],
         });
-
         const text = message.content[0].type === "text" ? message.content[0].text : "";
         const parsed = safeParseJSON(text);
-        if (!parsed) throw new Error("Failed to parse JSON response");
+        if (!parsed) throw new Error("Failed to parse JSON");
         feedback.push({ personaId, ...parsed });
-        console.log(`Feedback generated for ${personaId}: score ${parsed.overallScore}`);
+        console.log(`[Feedback-Batch] ${personaId}: score ${parsed.overallScore}`);
       } catch (err: any) {
-        console.error(`Feedback failed for ${personaId}:`, err.message);
-        // Continue with other personas
+        console.error(`[Feedback-Batch] Failed for ${personaId}:`, err.message);
       }
     }
-
     res.json({ feedback });
   } catch (error: any) {
     console.error("Batch feedback error:", error.message);
@@ -264,35 +276,25 @@ app.post("/api/feedback-batch", async (req, res) => {
   }
 });
 
-// SPA fallback — serve index.html for all non-API routes
+// === SPA Fallback ===
 app.use((_req: any, res: any) => {
   res.sendFile(path.join(__dirname, "../dist/index.html"));
 });
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 app.listen(PORT, "0.0.0.0", () => {
+  const ttsProviders: string[] = [];
+  if (process.env.OPENAI_API_KEY) ttsProviders.push("openai");
+  if (process.env.ELEVENLABS_API_KEY) ttsProviders.push("elevenlabs");
   console.log(`Server running on port ${PORT}`);
-  console.log(`LLM available: ${!!process.env.ANTHROPIC_API_KEY}`);
-  console.log(`TTS available: ${!!process.env.OPENAI_API_KEY}`);
+  console.log(`LLM: ${!!process.env.ANTHROPIC_API_KEY ? "yes" : "no"}`);
+  console.log(`TTS providers: ${ttsProviders.length > 0 ? ttsProviders.join(", ") : "none"}`);
 });
 
-// Robust JSON parser that handles markdown fences and partial JSON
 function safeParseJSON(text: string): any {
-  // Strip markdown code fences
   let cleaned = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-
-  // Try direct parse first
-  try {
-    return JSON.parse(cleaned);
-  } catch {}
-
-  // Try to extract JSON object from surrounding text
-  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-  if (jsonMatch) {
-    try {
-      return JSON.parse(jsonMatch[0]);
-    } catch {}
-  }
-
+  try { return JSON.parse(cleaned); } catch {}
+  const m = cleaned.match(/\{[\s\S]*\}/);
+  if (m) { try { return JSON.parse(m[0]); } catch {} }
   return null;
 }
