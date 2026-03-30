@@ -2,14 +2,17 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <title>PitchPractice — AI Audience Simulator</title>
     <style>
-      /* Prevent iOS Safari bounce scroll and zoom issues */
-      html, body { overflow: hidden; height: 100%; width: 100%; position: fixed; }
-      #root { height: 100%; overflow: auto; -webkit-overflow-scrolling: touch; }
-      /* Prevent input zoom on iOS */
+      html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #0f0f23; }
+      #root { height: 100dvh; height: 100vh; overflow: hidden; }
+      /* Prevent input zoom on mobile — must be 16px+ */
       input, select, textarea { font-size: 16px !important; }
+      /* Prevent iOS rubber-banding */
+      body { overscroll-behavior: none; -webkit-overflow-scrolling: touch; }
     </style>
   </head>
   <body>

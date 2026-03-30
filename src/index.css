@@ -220,8 +220,6 @@
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-/* Safe area padding for mobile bottom bar (iOS notch/home indicator) */
+/* Safe area padding for mobile */
 .safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
-
-/* Prevent pull-to-refresh on mobile */
-html { overscroll-behavior: none; }
+.safe-top { padding-top: env(safe-area-inset-top, 0px); }
