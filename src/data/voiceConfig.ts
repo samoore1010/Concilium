@@ -3,6 +3,8 @@ export interface VoiceConfig {
   pitch: number;
   rate: number;
   volume: number;
+  openaiVoice: string;  // OpenAI TTS voice ID
+  speed: number;        // OpenAI TTS speed (0.25-4.0)
 }
 
 export const PERSONA_VOICE_MAP: Record<string, VoiceConfig> = {
@@ -11,36 +13,48 @@ export const PERSONA_VOICE_MAP: Record<string, VoiceConfig> = {
     pitch: 1.1,
     rate: 0.95,
     volume: 0.9,
+    openaiVoice: "nova",
+    speed: 1.0,
   },
   "james-wilson": {
     preferredGender: "male",
     pitch: 0.8,
     rate: 0.85,
     volume: 0.85,
+    openaiVoice: "onyx",
+    speed: 0.9,
   },
   "aisha-johnson": {
     preferredGender: "female",
     pitch: 0.9,
     rate: 1.05,
     volume: 0.95,
+    openaiVoice: "shimmer",
+    speed: 1.05,
   },
   "carlos-reyes": {
     preferredGender: "male",
     pitch: 1.1,
     rate: 1.1,
     volume: 0.9,
+    openaiVoice: "echo",
+    speed: 1.1,
   },
   "patricia-omalley": {
     preferredGender: "female",
     pitch: 1.2,
     rate: 0.9,
     volume: 0.85,
+    openaiVoice: "fable",
+    speed: 0.9,
   },
   "dev-patel": {
     preferredGender: "male",
     pitch: 0.85,
     rate: 1.0,
     volume: 0.95,
+    openaiVoice: "alloy",
+    speed: 1.0,
   },
 };
 
@@ -51,6 +65,8 @@ export function getVoiceConfig(personaId: string): VoiceConfig {
       pitch: 1.0,
       rate: 1.0,
       volume: 0.9,
+      openaiVoice: "alloy",
+      speed: 1.0,
     }
   );
 }
@@ -61,19 +77,15 @@ export function pickBestVoice(
 ): SpeechSynthesisVoice | null {
   if (voices.length === 0) return null;
 
-  // Filter English voices
   const englishVoices = voices.filter(
     (v) => v.lang.startsWith("en") && !v.name.includes("Google")
   );
-
-  // Try Google voices first (better quality in Chrome)
   const googleVoices = voices.filter(
     (v) => v.lang.startsWith("en") && v.name.includes("Google")
   );
 
   const candidates = googleVoices.length > 0 ? googleVoices : englishVoices.length > 0 ? englishVoices : voices;
 
-  // Try to match gender heuristically by name
   const genderMatch = candidates.filter((v) => {
     const name = v.name.toLowerCase();
     if (config.preferredGender === "female") {

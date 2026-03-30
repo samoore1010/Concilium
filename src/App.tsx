@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Persona } from "./data/personas";
 import { FeedbackItem } from "./data/feedbackEngine";
+import { SessionRecord } from "./data/sessionHistory";
 import { getTheme } from "./data/themes";
 import { PersonaSelector } from "./components/PersonaSelector";
 import { MeetingRoom } from "./components/MeetingRoom";
@@ -33,6 +34,14 @@ export default function App() {
     setFeedback([]);
     setTranscript("");
     setView("setup");
+  };
+
+  const handleViewSession = (session: SessionRecord) => {
+    if (session.feedback) {
+      setFeedback(session.feedback as FeedbackItem[]);
+      setTranscript(session.transcript || "");
+      setView("feedback");
+    }
   };
 
   useEffect(() => {
@@ -105,6 +114,7 @@ export default function App() {
             feedback={feedback}
             transcript={transcript}
             onNewSession={handleNewSession}
+            onViewSession={handleViewSession}
           />
         </motion.div>
       )}
@@ -117,7 +127,7 @@ export default function App() {
           exit={{ opacity: 0 }}
           transition={{ duration: 0.4 }}
         >
-          <PersonaSelector onStartSession={handleStartSession} />
+          <PersonaSelector onStartSession={handleStartSession} onViewSession={handleViewSession} />
         </motion.div>
       )}
     </AnimatePresence>

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Persona, ReactionType } from "../data/personas";
 import { generateLiveReaction, generateSessionFeedback, FeedbackItem, shouldRaiseHand } from "../data/feedbackEngine";
-import { checkLLMAvailability, getLLMReactionsBatch, getLLMFeedbackBatch } from "../data/llmApi";
+import { checkLLMAvailability, getLLMReactionsBatch } from "../data/llmApi";
 import { getTheme } from "../data/themes";
 import { getVoiceConfig } from "../data/voiceConfig";
 import { AudienceTile } from "./AudienceTile";
@@ -45,6 +45,7 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
   const [mobilePanel, setMobilePanel] = useState<SideTab | null>(null);
   const [llmAvailable, setLlmAvailable] = useState(false);
   const [isEnding, setIsEnding] = useState(false);
+  const [generatingCount, setGeneratingCount] = useState(0);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
@@ -238,35 +239,38 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
     let feedback: FeedbackItem[];
 
     if (llmAvailable && ft.length > 20) {
-      try {
-        const llmFeedback = await getLLMFeedbackBatch(
-          personas.map((p) => p.id),
-          ft,
-          sessionType
-        );
-
-        // Map LLM results, fill in any missing personas with keyword fallback
-        const llmMap = new Map(llmFeedback.map((f) => [f.personaId, f]));
-        feedback = personas.map((p) => {
-          const llm = llmMap.get(p.id);
-          if (llm) {
-            return {
-              personaId: llm.personaId,
-              personaName: p.name,
-              overallScore: llm.overallScore,
-              summary: llm.summary,
-              strengths: llm.strengths,
-              weaknesses: llm.weaknesses,
-              suggestion: llm.suggestion,
-              emotionalResponse: llm.emotionalResponse,
-            };
+      // Call feedback for each persona sequentially with progress tracking
+      feedback = [];
+      for (const persona of personas) {
+        try {
+          const res = await fetch("/api/feedback", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              personaId: persona.id,
+              transcript: ft,
+              sessionType,
+            }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            feedback.push({
+              personaId: data.personaId,
+              personaName: persona.name,
+              overallScore: Math.max(1, Math.min(10, data.overallScore || 5)),
+              summary: data.summary || "",
+              strengths: data.strengths || [],
+              weaknesses: data.weaknesses || [],
+              suggestion: data.suggestion || "",
+              emotionalResponse: data.emotionalResponse || "",
+            });
+          } else {
+            feedback.push(generateSessionFeedback(persona, ft));
           }
-          // Fallback for personas where LLM failed
-          return generateSessionFeedback(p, ft);
-        });
-      } catch (err) {
-        console.error("LLM feedback failed, falling back:", err);
-        feedback = personas.map((p) => generateSessionFeedback(p, ft));
+        } catch {
+          feedback.push(generateSessionFeedback(persona, ft));
+        }
+        setGeneratingCount(feedback.length);
       }
     } else {
       feedback = personas.map((p) => generateSessionFeedback(p, ft));
@@ -283,6 +287,8 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
       wordCount: ft.split(/\s+/).filter(Boolean).length, duration: elapsed,
       speechMetrics: { wordsPerMinute: speechMetrics.wordsPerMinute, fillerWordCount: speechMetrics.fillerWordCount, longestPause: speechMetrics.longestPause, vocabularyScore: speechMetrics.vocabularyScore },
       prosodyMetrics: { averageVolume: prosodyMetrics.averageVolume, volumeVariation: prosodyMetrics.volumeVariation, pitchVariation: prosodyMetrics.pitchVariation, energyLevel: prosodyMetrics.energyLevel, silenceRatio: prosodyMetrics.silenceRatio },
+      feedback,
+      transcript: ft,
     });
     onEndSession(feedback, ft);
   };
@@ -321,6 +327,48 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
   return (
     <div className="h-[100dvh] flex flex-col text-white relative overflow-hidden">
       <ThemedBackground theme={theme} />
+
+      {/* Generating feedback overlay */}
+      <AnimatePresence>
+        {isEnding && (
+          <motion.div
+            key="generating-overlay"
+            className="absolute inset-0 z-50 bg-[#0f0f23]/90 backdrop-blur-sm flex items-center justify-center"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <div className="flex flex-col items-center gap-5">
+              <motion.div
+                className="w-14 h-14 rounded-full border-2"
+                style={{ borderColor: `${theme.accentColor}30`, borderTopColor: theme.accentColor }}
+                animate={{ rotate: 360 }}
+                transition={{ duration: 1.2, repeat: Infinity, ease: "linear" }}
+              />
+              <h2 className="text-xl font-semibold">Generating Feedback...</h2>
+              <p className="text-sm text-white/40">
+                {llmAvailable
+                  ? `Analyzing your presentation with ${personas.length} AI personas`
+                  : "Processing session data"}
+              </p>
+              {llmAvailable && generatingCount > 0 && (
+                <div className="flex flex-col items-center gap-2">
+                  <div className="w-48 h-1.5 rounded-full bg-white/10 overflow-hidden">
+                    <motion.div
+                      className="h-full rounded-full"
+                      style={{ backgroundColor: theme.accentColor }}
+                      initial={{ width: "0%" }}
+                      animate={{ width: `${(generatingCount / personas.length) * 100}%` }}
+                      transition={{ duration: 0.3 }}
+                    />
+                  </div>
+                  <span className="text-xs text-white/30">{generatingCount} of {personas.length} personas</span>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <div className="relative z-10 flex flex-col h-full">
         {/* === TOP BAR === */}

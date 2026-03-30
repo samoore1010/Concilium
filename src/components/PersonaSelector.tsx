@@ -5,6 +5,7 @@ import { getRecentSessions, SessionRecord } from "../data/sessionHistory";
 
 interface PersonaSelectorProps {
   onStartSession: (personas: Persona[], sessionType: string) => void;
+  onViewSession?: (session: SessionRecord) => void;
 }
 
 const SESSION_TYPES = [
@@ -14,7 +15,7 @@ const SESSION_TYPES = [
   { id: "sales-demo", label: "Sales Demo", desc: "Rehearse a product demo for prospective clients" },
 ];
 
-export function PersonaSelector({ onStartSession }: PersonaSelectorProps) {
+export function PersonaSelector({ onStartSession, onViewSession }: PersonaSelectorProps) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [sessionType, setSessionType] = useState("business-pitch");
   const [recentSessions, setRecentSessions] = useState<SessionRecord[]>([]);
@@ -90,12 +91,19 @@ export function PersonaSelector({ onStartSession }: PersonaSelectorProps) {
                 const scoreBg = session.overallScore >= 7 ? "bg-emerald-500/10 border-emerald-500/20" : session.overallScore >= 5 ? "bg-yellow-500/10 border-yellow-500/20" : "bg-red-500/10 border-red-500/20";
                 const date = new Date(session.date).toLocaleDateString();
                 return (
-                  <div key={session.id} className={`rounded-lg border p-3 ${scoreBg}`}>
+                  <button
+                    key={session.id}
+                    onClick={() => session.feedback && onViewSession?.(session)}
+                    className={`rounded-lg border p-3 text-left transition-all ${scoreBg} ${session.feedback ? "hover:brightness-125 cursor-pointer" : "opacity-60 cursor-default"}`}
+                  >
                     <div className="text-xs text-white/50 mb-1">{date}</div>
                     <div className="text-sm font-medium text-white mb-1">{session.sessionType.replace(/-/g, " ")}</div>
-                    <div className={`text-lg font-bold ${scoreColor}`}>{session.overallScore.toFixed(1)}/10</div>
-                    <div className="text-xs text-white/40 mt-1">{session.personaIds.length} personas</div>
-                  </div>
+                    <div className={`text-lg font-bold ${scoreColor}`}>{(session.overallScore || 0).toFixed(1)}/10</div>
+                    <div className="flex items-center justify-between mt-1">
+                      <span className="text-xs text-white/40">{session.personaIds.length} personas</span>
+                      {session.feedback && <span className="text-[10px] text-blue-400">View report</span>}
+                    </div>
+                  </button>
                 );
               })}
             </div>
