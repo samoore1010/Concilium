@@ -140,9 +140,11 @@ export function useTTS(): UseTTSReturn {
       const controller = new AbortController();
       abortRef.current = controller;
 
-      log(`Fetching ${useApi} audio for ${personaId || "unknown"}...`);
+      // Use streaming endpoint for ElevenLabs (lower latency)
+      const endpoint = useApi === "elevenlabs" ? "/api/tts/stream" : "/api/tts";
+      log(`Fetching ${useApi} audio (${endpoint === "/api/tts/stream" ? "streaming" : "buffered"}) for ${personaId || "unknown"}...`);
 
-      fetch("/api/tts", {
+      fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text, personaId, speed: voiceConfig?.speed || 1.0, provider: useApi }),

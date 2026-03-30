@@ -62,6 +62,7 @@ app.get("/api/health", (_req, res) => {
     llmAvailable: !!process.env.ANTHROPIC_API_KEY,
     ttsAvailable: ttsProviders.length > 0,
     ttsProviders,
+    sttAvailable: !!process.env.ELEVENLABS_API_KEY,
   });
 });
 
@@ -109,6 +110,91 @@ app.get("/api/tts/test-elevenlabs", async (_req, res) => {
   } catch (e: any) { ttsStatus = e.message; }
 
   res.json({ keyPreview, keyLength: apiKey.length, modelsStatus, ttsStatus, ttsDetail });
+});
+
+// === ElevenLabs STT Token (for client-side WebSocket) ===
+
+app.get("/api/elevenlabs-stt-token", async (_req, res) => {
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+  if (!apiKey) return res.json({ available: false });
+
+  try {
+    // Generate a short-lived signed URL token for the client
+    // The client connects directly to ElevenLabs WebSocket with this token
+    // For now, we pass the API key directly (the client-side WebSocket supports it)
+    // In production, use ElevenLabs' signed URL feature for better security
+    res.json({ available: true, token: apiKey });
+  } catch (err: any) {
+    console.error("[STT Token] Error:", err.message);
+    res.json({ available: false });
+  }
+});
+
+// === Streaming TTS Endpoint ===
+
+app.post("/api/tts/stream", async (req, res) => {
+  const { text, personaId, provider } = req.body;
+  if (!text) return res.status(400).json({ error: "text required" });
+
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+  if (!apiKey && provider === "elevenlabs") return res.status(503).json({ error: "ElevenLabs not configured" });
+
+  // Use ElevenLabs streaming endpoint
+  if (apiKey && (provider === "elevenlabs" || provider === "auto")) {
+    try {
+      const voiceId = ELEVENLABS_VOICES[personaId] || "21m00Tcm4TlvDq8ikWAM";
+      console.log(`[TTS:Stream] ElevenLabs voice="${voiceId}" persona="${personaId}"`);
+
+      const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`, {
+        method: "POST",
+        headers: {
+          "xi-api-key": apiKey,
+          "Content-Type": "application/json",
+          "Accept": "audio/mpeg",
+        },
+        body: JSON.stringify({
+          text,
+          model_id: "eleven_multilingual_v2",
+          optimize_streaming_latency: 3, // Balance quality + speed
+          voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+        }),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        console.error(`[TTS:Stream] ElevenLabs error ${response.status}:`, errText);
+        // Fallback to non-streaming
+        return ttsOpenAI(text, personaId, 1.0, res);
+      }
+
+      // Pipe the streaming response directly to the client
+      res.set({
+        "Content-Type": "audio/mpeg",
+        "Transfer-Encoding": "chunked",
+      });
+
+      const reader = response.body?.getReader();
+      if (!reader) throw new Error("No response body");
+
+      const pump = async () => {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) { res.end(); break; }
+          res.write(Buffer.from(value));
+        }
+      };
+      await pump();
+    } catch (err: any) {
+      console.error("[TTS:Stream] Error:", err.message);
+      if (!res.headersSent) {
+        res.status(500).json({ error: "Streaming TTS failed" });
+      }
+    }
+    return;
+  }
+
+  // Fallback to regular TTS
+  return ttsOpenAI(text, personaId, 1.0, res);
 });
 
 // === TTS Endpoint (multi-provider) ===
