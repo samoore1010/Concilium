@@ -11,7 +11,7 @@ import { PracticeDashboard } from "./components/practice/PracticeDashboard";
 import { ExerciseView } from "./components/practice/ExerciseView";
 import { PersonaSelector } from "./components/PersonaSelector";
 import { ScriptSetup, ScriptConfig } from "./components/ScriptSetup";
-import { MeetingRoom } from "./components/MeetingRoom";
+import { MeetingRoom, SessionRecordingData } from "./components/MeetingRoom";
 import { FeedbackView } from "./components/FeedbackView";
 
 type AppView =
@@ -34,6 +34,7 @@ export default function App() {
   const [currentLessonId, setCurrentLessonId] = useState<string>("");
   const [achievementToast, setAchievementToast] = useState<Achievement | null>(null);
   const [scriptConfig, setScriptConfig] = useState<ScriptConfig>({ mode: "none", text: "" });
+  const [recordingData, setRecordingData] = useState<SessionRecordingData | undefined>();
 
   // === PERFORM MODE HANDLERS ===
   const handleStartSession = (personas: Persona[], type: string) => {
@@ -47,9 +48,10 @@ export default function App() {
     setView("joining");
   };
 
-  const handleEndSession = (fb: FeedbackItem[], tx: string) => {
+  const handleEndSession = (fb: FeedbackItem[], tx: string, recording?: SessionRecordingData) => {
     setFeedback(fb);
     setTranscript(tx);
+    setRecordingData(recording);
     setView("feedback");
   };
 
@@ -158,7 +160,7 @@ export default function App() {
 
         {view === "feedback" && (
           <motion.div key="feedback" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.5 }}>
-            <FeedbackView feedback={feedback} transcript={transcript} onNewSession={handleNewSession} onViewSession={handleViewSession} />
+            <FeedbackView feedback={feedback} transcript={transcript} recordingData={recordingData} onNewSession={handleNewSession} onViewSession={handleViewSession} />
           </motion.div>
         )}
 
