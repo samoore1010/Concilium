@@ -9,7 +9,7 @@ export interface RecordingData {
 interface UseAudioRecorderReturn {
   isRecording: boolean;
   startRecording: () => Promise<void>;
-  stopRecording: () => RecordingData;
+  stopRecording: () => Promise<RecordingData>;
   getRecording: () => RecordingData;
 }
 
@@ -20,39 +20,33 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   const startTimeRef = useRef(0);
   const blobRef = useRef<Blob | null>(null);
   const urlRef = useRef("");
+  const mimeTypeRef = useRef("");
 
   const startRecording = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
 
-      // Choose best available format
       const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
         ? "audio/webm;codecs=opus"
         : MediaRecorder.isTypeSupported("audio/webm")
         ? "audio/webm"
-        : "audio/mp4"; // iOS Safari fallback
+        : "audio/mp4";
 
-      const recorder = new MediaRecorder(stream, {
-        mimeType,
-        audioBitsPerSecond: 128000,
-      });
+      const recorder = new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 128000 });
 
       chunksRef.current = [];
       blobRef.current = null;
       if (urlRef.current) URL.revokeObjectURL(urlRef.current);
       urlRef.current = "";
+      mimeTypeRef.current = mimeType;
 
       recorder.ondataavailable = (e) => {
         if (e.data.size > 0) chunksRef.current.push(e.data);
       };
 
-      recorder.start(1000); // Collect data every second
+      recorder.start(500); // Collect data every 500ms for more granular chunks
       startTimeRef.current = Date.now();
       mediaRecorderRef.current = recorder;
       setIsRecording(true);
@@ -62,24 +56,35 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     }
   }, []);
 
-  const stopRecording = useCallback((): RecordingData => {
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      mediaRecorderRef.current.stop();
-      mediaRecorderRef.current.stream.getTracks().forEach((t) => t.stop());
+  // Stop recording and wait for all data to be flushed
+  const stopRecording = useCallback((): Promise<RecordingData> => {
+    return new Promise((resolve) => {
+      const recorder = mediaRecorderRef.current;
+      if (!recorder || recorder.state === "inactive") {
+        resolve({ blob: null, url: "", duration: 0 });
+        return;
+      }
 
-      const blob = new Blob(chunksRef.current, { type: mediaRecorderRef.current.mimeType });
-      const url = URL.createObjectURL(blob);
       const duration = (Date.now() - startTimeRef.current) / 1000;
 
-      blobRef.current = blob;
-      urlRef.current = url;
-      mediaRecorderRef.current = null;
-      setIsRecording(false);
+      // Wait for the onstop event which fires AFTER all ondataavailable events
+      recorder.onstop = () => {
+        const blob = new Blob(chunksRef.current, { type: mimeTypeRef.current });
+        const url = URL.createObjectURL(blob);
 
-      console.log(`[Recorder] Stopped: ${(blob.size / 1024).toFixed(1)}KB, ${duration.toFixed(1)}s`);
-      return { blob, url, duration };
-    }
-    return { blob: null, url: "", duration: 0 };
+        blobRef.current = blob;
+        urlRef.current = url;
+        mediaRecorderRef.current = null;
+        setIsRecording(false);
+
+        console.log(`[Recorder] Stopped: ${(blob.size / 1024).toFixed(1)}KB, ${duration.toFixed(1)}s, ${chunksRef.current.length} chunks`);
+        resolve({ blob, url, duration });
+      };
+
+      // Stop the recorder and its stream
+      recorder.stop();
+      recorder.stream.getTracks().forEach((t) => t.stop());
+    });
   }, []);
 
   const getRecording = useCallback((): RecordingData => {
@@ -90,7 +95,6 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     };
   }, []);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {

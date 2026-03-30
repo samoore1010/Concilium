@@ -1,5 +1,6 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { ProsodyFrame } from "../hooks/useProsody";
+import { generateCoachingReport, CoachingReport } from "../data/prosodyAnalysis";
 
 export interface SessionEvent {
   time: number;       // seconds
@@ -14,9 +15,12 @@ interface SessionPlaybackProps {
   timeline: ProsodyFrame[];
   events: SessionEvent[];
   transcript: string;
+  wpm?: number;
+  fillerCount?: number;
+  sessionType?: string;
 }
 
-export function SessionPlayback({ audioUrl, duration, timeline, events, transcript }: SessionPlaybackProps) {
+export function SessionPlayback({ audioUrl, duration, timeline, events, transcript, wpm = 0, fillerCount = 0, sessionType = "business-pitch" }: SessionPlaybackProps) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
@@ -168,6 +172,12 @@ export function SessionPlayback({ audioUrl, duration, timeline, events, transcri
   // Find events near current playback time
   const activeEvents = events.filter((e) => Math.abs(e.time - currentTime) < 2);
 
+  // Generate coaching report
+  const coachingReport = useMemo(() => {
+    if (timeline.length < 10) return null;
+    return generateCoachingReport(timeline, wpm, fillerCount, duration, sessionType);
+  }, [timeline, wpm, fillerCount, duration, sessionType]);
+
   if (!audioUrl) {
     return (
       <div className="text-center py-8 text-white/30 text-sm">
@@ -269,6 +279,81 @@ export function SessionPlayback({ audioUrl, duration, timeline, events, transcri
           </div>
         </div>
       )}
+
+      {/* Coaching Report */}
+      {coachingReport && (
+        <div className="space-y-4 mt-6 pt-6 border-t border-white/10">
+          {/* Overall Score */}
+          <div className="flex items-center gap-4">
+            <div className={`text-4xl font-bold ${coachingReport.overallScore >= 70 ? "text-emerald-400" : coachingReport.overallScore >= 50 ? "text-yellow-400" : "text-red-400"}`}>
+              {coachingReport.overallScore}
+            </div>
+            <div>
+              <div className="text-sm font-medium">{coachingReport.overallRating} Delivery</div>
+              <div className="text-[10px] text-white/40">Based on pitch, volume, pace, pauses, and filler word analysis</div>
+            </div>
+          </div>
+
+          {coachingReport.topStrengths.length > 0 && (
+            <div className="text-xs text-emerald-400">Strengths: {coachingReport.topStrengths.join(", ")}</div>
+          )}
+          {coachingReport.topImprovements.length > 0 && (
+            <div className="text-xs text-amber-400">Focus areas: {coachingReport.topImprovements.join(", ")}</div>
+          )}
+
+          {/* Individual metrics */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <CoachingCard title="Pitch Variety" rating={coachingReport.pitch.rating} advice={coachingReport.pitch.advice}
+              stats={[{ label: "Average", value: `${coachingReport.pitch.averagePitchHz} Hz` }, { label: "Range", value: `${coachingReport.pitch.pitchRangeHz[0]}-${coachingReport.pitch.pitchRangeHz[1]} Hz` }, { label: "Std Dev", value: `${coachingReport.pitch.pitchStdDev} Hz` }, { label: "Monotone", value: `${coachingReport.pitch.monotonePercent}%` }]}
+            />
+            <CoachingCard title="Volume & Projection" rating={coachingReport.volume.projectionRating} advice={coachingReport.volume.advice}
+              stats={[{ label: "Level", value: `${coachingReport.volume.averageLevel}/100` }, { label: "Dynamic Range", value: `${coachingReport.volume.dynamicRange}` }, { label: "Dynamics", value: coachingReport.volume.dynamicsRating }, { label: "Quiet Drops", value: `${coachingReport.volume.quietMoments}` }]}
+            />
+            <CoachingCard title="Speaking Pace" rating={coachingReport.pace.rating} advice={coachingReport.pace.advice}
+              stats={[{ label: "WPM", value: `${coachingReport.pace.wpm}` }]}
+            />
+            <CoachingCard title="Pause Usage" rating={coachingReport.pauses.rating} advice={coachingReport.pauses.advice}
+              stats={[{ label: "Total Pauses", value: `${coachingReport.pauses.totalPauses}` }, { label: "Strategic (1-3s)", value: `${coachingReport.pauses.strategicPauses}` }, { label: "Awkward (4s+)", value: `${coachingReport.pauses.awkwardSilences}` }, { label: "Per Minute", value: `${coachingReport.pauses.pauseFrequency}` }]}
+            />
+            <CoachingCard title="Filler Words" rating={coachingReport.fillers.rating} advice={coachingReport.fillers.advice}
+              stats={[{ label: "Count", value: `${coachingReport.fillers.count}` }, { label: "Per Minute", value: `${coachingReport.fillers.perMinute}` }]}
+              className="md:col-span-2"
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CoachingCard({ title, rating, advice, stats, className }: {
+  title: string; rating: string; advice: string;
+  stats: { label: string; value: string }[];
+  className?: string;
+}) {
+  const ratingColors: Record<string, string> = {
+    excellent: "text-emerald-400", good: "text-emerald-400", optimal: "text-emerald-400", expressive: "text-emerald-400",
+    moderate: "text-yellow-400", "low-variety": "text-yellow-400", slow: "text-yellow-400", fast: "text-yellow-400", quiet: "text-yellow-400", loud: "text-yellow-400", "too-few": "text-yellow-400", "too-many": "text-yellow-400", low: "text-yellow-400", flat: "text-yellow-400", dramatic: "text-blue-400",
+    monotone: "text-red-400", "too-slow": "text-red-400", "too-fast": "text-red-400", "too-quiet": "text-red-400", "too-loud": "text-red-400", high: "text-orange-400", excessive: "text-red-400", "awkward-silences": "text-red-400", "overly-dramatic": "text-orange-400",
+  };
+
+  return (
+    <div className={`rounded-xl border border-white/10 bg-white/[0.02] p-4 ${className || ""}`}>
+      <div className="flex items-center justify-between mb-2">
+        <h4 className="text-xs font-semibold text-white/80">{title}</h4>
+        <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full bg-white/5 ${ratingColors[rating] || "text-white/50"}`}>
+          {rating.replace(/-/g, " ")}
+        </span>
+      </div>
+      <div className="flex flex-wrap gap-3 mb-3">
+        {stats.map((s) => (
+          <div key={s.label} className="text-[10px]">
+            <span className="text-white/40">{s.label}: </span>
+            <span className="text-white/70 font-medium">{s.value}</span>
+          </div>
+        ))}
+      </div>
+      <p className="text-[11px] text-white/50 leading-relaxed">{advice}</p>
     </div>
   );
 }

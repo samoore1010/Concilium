@@ -492,7 +492,9 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     interruptQueueRef.current = [];
     isProcessingInterruptRef.current = false;
     waitingForResponseRef.current = false;
-    stopCamera(); stopListening(); stopTTS(); stopProsody(); stopVAD(); stopRecording();
+    stopCamera(); stopListening(); stopTTS(); stopProsody(); stopVAD();
+    // Await recording stop to ensure all audio data is flushed
+    const recordingResult = await stopRecording();
     setContinuousActive(false);
     const ft = transcript.join(" ");
 
@@ -550,12 +552,11 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
       feedback,
       transcript: ft,
     });
-    // Collect recording data
-    const recording = getRecording();
+    // Collect recording data (use awaited result, not getRecording)
     const timeline = getTimeline();
-    const recordingData: SessionRecordingData | undefined = recording.url ? {
-      audioUrl: recording.url,
-      duration: recording.duration,
+    const recordingData: SessionRecordingData | undefined = recordingResult.url ? {
+      audioUrl: recordingResult.url,
+      duration: recordingResult.duration,
       timeline,
       chatMessages: [...chatMessages],
     } : undefined;
