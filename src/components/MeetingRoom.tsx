@@ -48,6 +48,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
   const [ttsEnabled, setTtsEnabled] = useState(true);
   const [sideTab, setSideTab] = useState<SideTab>("chat");
   const [mobilePanel, setMobilePanel] = useState<SideTab | null>(null);
+  const [showDebug, setShowDebug] = useState(false);
   const [llmAvailable, setLlmAvailable] = useState(false);
   const [isEnding, setIsEnding] = useState(false);
   const [generatingCount, setGeneratingCount] = useState(0);
@@ -73,7 +74,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
   const { transcript: speechTranscript, interimTranscript, isListening, startListening, stopListening, consumeNewText } = useSpeechRecognition();
   const { metrics: speechMetrics, updateMetrics } = useSpeechMetrics();
   const { metrics: prosodyMetrics, isAnalyzing: isProsodyActive, startAnalysis: startProsody, stopAnalysis: stopProsody } = useProsody();
-  const { speak, stop: stopTTS, isSpeaking, availableProviders, activeProvider, setProvider } = useTTS();
+  const { speak, stop: stopTTS, isSpeaking, availableProviders, activeProvider, setProvider, debugLog } = useTTS();
   const { start: startVAD, stop: stopVAD, onSilenceThreshold } = useVAD(behavior.silenceThresholdMs);
 
   // Check if LLM backend is available on mount
@@ -615,7 +616,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full animate-pulse" style={{ backgroundColor: theme.accentColor }} />
             <span className="text-xs font-medium truncate max-w-[120px] md:max-w-none">{theme.label}</span>
-            <span className="text-[10px] text-white/40 font-mono">{fmt(elapsed)}</span>
+            <span className="text-[10px] text-white/40 font-mono cursor-pointer" onClick={() => setShowDebug(!showDebug)}>{fmt(elapsed)}</span>
           </div>
           <div className="flex items-center gap-1.5">
             <span className="text-[10px] text-white/40 hidden sm:inline">{personas.length} audience</span>
@@ -625,6 +626,14 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
             </button>
           </div>
         </div>
+
+        {/* Debug panel — tap timer 3x to toggle */}
+        {showDebug && (
+          <div className="bg-black/90 text-[9px] text-green-400 font-mono px-2 py-1 max-h-[120px] overflow-y-auto flex-shrink-0">
+            {debugLog.slice(-10).map((l, i) => <div key={i}>{l}</div>)}
+            <button onClick={() => setShowDebug(false)} className="text-red-400 mt-1">Close Debug</button>
+          </div>
+        )}
 
         {/* === MAIN AREA === */}
         <div className="flex-1 flex overflow-hidden min-h-0">
