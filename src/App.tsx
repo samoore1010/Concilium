@@ -10,6 +10,7 @@ import { LandingPage } from "./components/practice/LandingPage";
 import { PracticeDashboard } from "./components/practice/PracticeDashboard";
 import { ExerciseView } from "./components/practice/ExerciseView";
 import { PersonaSelector } from "./components/PersonaSelector";
+import { ScriptSetup, ScriptConfig } from "./components/ScriptSetup";
 import { MeetingRoom } from "./components/MeetingRoom";
 import { FeedbackView } from "./components/FeedbackView";
 
@@ -18,6 +19,7 @@ type AppView =
   | "practice-dashboard"
   | "practice-exercise"
   | "setup"
+  | "script-setup"
   | "meeting"
   | "feedback"
   | "joining";
@@ -31,11 +33,17 @@ export default function App() {
   const [practiceProgress, setPracticeProgress] = useState<UserProgress>(loadProgress());
   const [currentLessonId, setCurrentLessonId] = useState<string>("");
   const [achievementToast, setAchievementToast] = useState<Achievement | null>(null);
+  const [scriptConfig, setScriptConfig] = useState<ScriptConfig>({ mode: "none", text: "" });
 
   // === PERFORM MODE HANDLERS ===
   const handleStartSession = (personas: Persona[], type: string) => {
     setSelectedPersonas(personas);
     setSessionType(type);
+    setView("script-setup"); // go to script setup before joining
+  };
+
+  const handleScriptContinue = (config: ScriptConfig) => {
+    setScriptConfig(config);
     setView("joining");
   };
 
@@ -130,6 +138,12 @@ export default function App() {
           </motion.div>
         )}
 
+        {view === "script-setup" && (
+          <motion.div key="script-setup" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.3 }}>
+            <ScriptSetup sessionType={sessionType} onContinue={handleScriptContinue} onBack={() => setView("setup")} />
+          </motion.div>
+        )}
+
         {view === "joining" && (
           <motion.div key="joining" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.5 }}>
             <ThemedInterstitial title={theme.transitionLabel} subtext={theme.transitionSubtext} accentColor={theme.accentColor} backgroundClass={theme.backgroundClass} />
@@ -138,7 +152,7 @@ export default function App() {
 
         {view === "meeting" && (
           <motion.div key="meeting" className="h-screen" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.6 }}>
-            <MeetingRoom personas={selectedPersonas} sessionType={sessionType} onEndSession={handleEndSession} onBack={handleNewSession} />
+            <MeetingRoom personas={selectedPersonas} sessionType={sessionType} scriptConfig={scriptConfig} onEndSession={handleEndSession} onBack={handleNewSession} />
           </motion.div>
         )}
 

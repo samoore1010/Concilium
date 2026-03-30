@@ -214,16 +214,35 @@ export function getPersonaPrompt(personaId: string): PersonaPrompt {
   return PERSONA_PROMPTS[personaId] || PERSONA_PROMPTS["maria-chen"];
 }
 
+// Session-specific turn-taking instructions
+const TURN_TAKING: Record<string, string> = {
+  "mock-trial": `This is an oral argument before a judicial panel. You are a judge. You SHOULD interrupt the presenter with tough questions — this is how oral arguments work. Don't wait for them to finish if you have a pressing question. Be direct and challenging. If the presenter pauses even briefly, you may jump in. Set "shouldInterrupt" to true when you have a question you'd ask mid-speech.`,
+
+  "business-pitch": `This is a business pitch. You're an investor/panelist. Generally let the presenter make their case, but you CAN interrupt if something is unclear, if they make a bold claim without evidence, or if you're losing interest. Set "shouldInterrupt" to true only for important clarifications.`,
+
+  "public-speaking": `This is a keynote or speech. You are in the audience. Do NOT interrupt — listen silently and react non-verbally. Save all questions and comments. Only set "shouldInterrupt" to false. You may think and react, but the speaker has the floor.`,
+
+  "sales-demo": `This is a sales presentation. You're a potential client. You can ask clarifying questions occasionally but generally let them present. Set "shouldInterrupt" to true only if you're confused or need immediate clarification.`,
+};
+
 export function buildReactionPrompt(persona: PersonaPrompt, userText: string, sessionType: string, messageHistory: string[]): string {
   const context = messageHistory.length > 0
     ? `\n\nPrevious statements from the presenter:\n${messageHistory.slice(-5).map((m, i) => `${i + 1}. "${m}"`).join("\n")}`
     : "";
 
+  const turnTaking = TURN_TAKING[sessionType] || TURN_TAKING["business-pitch"];
+
   return `The presenter is giving a ${sessionType.replace(/-/g, " ")}. They just said:
 
 "${userText}"${context}
 
+SESSION BEHAVIOR: ${turnTaking}
+
 ${persona.reactionInstruction}
+
+Add these fields to the JSON:
+- "shouldInterrupt": boolean (true if you would speak up RIGHT NOW, before the presenter continues)
+- "urgency": "low" | "medium" | "high" (how important is it that you speak)
 
 Respond with ONLY the JSON object, no other text.`;
 }

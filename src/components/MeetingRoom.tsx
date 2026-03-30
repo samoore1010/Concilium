@@ -4,21 +4,26 @@ import { Persona, ReactionType } from "../data/personas";
 import { generateLiveReaction, generateSessionFeedback, FeedbackItem, shouldRaiseHand } from "../data/feedbackEngine";
 import { checkLLMAvailability, getLLMReactionsBatch } from "../data/llmApi";
 import { getTheme } from "../data/themes";
+import { getSessionBehavior } from "../data/sessionBehavior";
 import { getVoiceConfig } from "../data/voiceConfig";
 import { AudienceTile } from "./AudienceTile";
 import { ThemedBackground } from "./ThemedBackground";
 import { ThemedLayout } from "./ThemedLayout";
+import { Teleprompter } from "./Teleprompter";
 import { QuestionQueue, QueuedQuestion, handRaiseToQueuedQuestion } from "./QuestionQueue";
+import { ScriptConfig } from "./ScriptSetup";
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 import { useCamera } from "../hooks/useCamera";
 import { useSpeechMetrics } from "../hooks/useSpeechMetrics";
 import { useProsody } from "../hooks/useProsody";
+import { useVAD } from "../hooks/useVAD";
 import { useTTS } from "../hooks/useTTS";
 import { addSession, SessionRecord } from "../data/sessionHistory";
 
 interface MeetingRoomProps {
   personas: Persona[];
   sessionType: string;
+  scriptConfig?: ScriptConfig;
   onEndSession: (feedback: FeedbackItem[], transcript: string) => void;
   onBack: () => void;
 }
@@ -31,7 +36,7 @@ interface PersonaState {
 
 type SideTab = "chat" | "coach" | "questions";
 
-export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: MeetingRoomProps) {
+export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession, onBack }: MeetingRoomProps) {
   const [inputText, setInputText] = useState("");
   const [transcript, setTranscript] = useState<string[]>([]);
   const [personaStates, setPersonaStates] = useState<Record<string, PersonaState>>({});
@@ -49,18 +54,58 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
   const chatEndRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
+  const [showTeleprompter, setShowTeleprompter] = useState(!!scriptConfig?.text);
+  const [continuousActive, setContinuousActive] = useState(false);
+  const pendingTextRef = useRef("");
+  const wordCountRef = useRef(0);
+
   const theme = getTheme(sessionType);
+  const behavior = getSessionBehavior(sessionType);
 
   const { isActive: isCameraActive, startCamera, stopCamera, attachVideo } = useCamera();
   const { transcript: speechTranscript, isListening, startListening, stopListening } = useSpeechRecognition();
   const { metrics: speechMetrics, updateMetrics } = useSpeechMetrics();
   const { metrics: prosodyMetrics, isAnalyzing: isProsodyActive, startAnalysis: startProsody, stopAnalysis: stopProsody } = useProsody();
   const { speak, stop: stopTTS, isSpeaking, availableProviders, activeProvider, setProvider } = useTTS();
+  const { start: startVAD, stop: stopVAD, onSilenceThreshold } = useVAD(behavior.silenceThresholdMs);
 
   // Check if LLM backend is available on mount
   useEffect(() => {
     checkLLMAvailability().then(setLlmAvailable);
   }, []);
+
+  // Continuous mode: accumulate speech text and auto-send on silence
+  useEffect(() => {
+    if (speechTranscript && speechTranscript.length > 0 && continuousActive) {
+      pendingTextRef.current = speechTranscript;
+    }
+  }, [speechTranscript, continuousActive]);
+
+  // VAD silence callback — auto-send accumulated text
+  useEffect(() => {
+    if (!continuousActive) return;
+    onSilenceThreshold(() => {
+      const text = pendingTextRef.current.trim();
+      if (text.length > 0) {
+        processUserInput(text);
+        pendingTextRef.current = "";
+      }
+    });
+  }, [continuousActive, onSilenceThreshold]);
+
+  const startContinuousMode = useCallback(() => {
+    setContinuousActive(true);
+    startListening();
+    startProsody();
+    startVAD();
+  }, [startListening, startProsody, startVAD]);
+
+  const stopContinuousMode = useCallback(() => {
+    setContinuousActive(false);
+    stopListening();
+    stopProsody();
+    stopVAD();
+  }, [stopListening, stopProsody, stopVAD]);
 
   useEffect(() => {
     if (!isSpeaking && speakingPersonaId) {
@@ -102,13 +147,13 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
     return () => clearInterval(interval);
   }, [personas, speakingPersonaId]);
 
-  const handleSendMessage = useCallback(() => {
-    if (!inputText.trim()) return;
-    const text = inputText.trim();
-    setTranscript((prev) => [...prev, text]);
-    setChatMessages((prev) => [...prev, { from: "You", text, time: elapsed }]);
-    updateMetrics(text);
-    setInputText("");
+  // Shared input processing (used by both send button and continuous mode)
+  const processUserInput = useCallback((text: string) => {
+    if (!text.trim()) return;
+    wordCountRef.current += text.trim().split(/\s+/).length;
+    setTranscript((prev) => [...prev, text.trim()]);
+    setChatMessages((prev) => [...prev, { from: "You", text: text.trim(), time: elapsed }]);
+    updateMetrics(text.trim());
     const newMC = messageCount + 1;
     setMessageCount(newMC);
 
@@ -164,7 +209,14 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
       // === KEYWORD FALLBACK ===
       fallbackKeywordReactions(text, newMC);
     }
-  }, [inputText, personas, elapsed, messageCount, personaStates, updateMetrics, llmAvailable, sessionType, transcript]);
+  }, [personas, elapsed, messageCount, personaStates, updateMetrics, llmAvailable, sessionType, transcript]);
+
+  // Send button handler (for manual/text mode)
+  const handleSendMessage = useCallback(() => {
+    if (!inputText.trim()) return;
+    processUserInput(inputText.trim());
+    setInputText("");
+  }, [inputText, processUserInput]);
 
   // Keyword-based fallback (original system)
   const fallbackKeywordReactions = useCallback((text: string, newMC: number) => {
@@ -397,11 +449,22 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
         {/* === MAIN AREA === */}
         <div className="flex-1 flex overflow-hidden min-h-0">
 
-          {/* AUDIENCE AREA — full width on mobile, flex-1 on desktop */}
-          <div className="flex-1 p-2 md:p-4 min-h-0 overflow-hidden">
-            <ThemedLayout theme={theme}>
-              {audienceTiles}
-            </ThemedLayout>
+          {/* AUDIENCE AREA with optional teleprompter */}
+          <div className="flex-1 p-2 md:p-4 min-h-0 overflow-hidden relative">
+            {/* Teleprompter overlay (left side) */}
+            {scriptConfig?.text && (
+              <Teleprompter
+                script={scriptConfig.text}
+                isActive={showTeleprompter}
+                onToggle={() => setShowTeleprompter(!showTeleprompter)}
+              />
+            )}
+
+            <div className={`h-full ${scriptConfig?.text && showTeleprompter ? "ml-[300px] md:ml-[350px]" : ""} transition-all`}>
+              <ThemedLayout theme={theme}>
+                {audienceTiles}
+              </ThemedLayout>
+            </div>
           </div>
 
           {/* === DESKTOP SIDEBAR === */}
@@ -514,19 +577,42 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
               )}
             </button>
 
-            {/* Input */}
-            <input
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-              placeholder="Speak or type..."
-              className="flex-1 min-w-0 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 md:py-2 text-sm text-white placeholder-white/30 outline-none focus:border-blue-400/50"
-            />
+            {/* Continuous mode: live indicator or text input */}
+            {continuousActive ? (
+              <div className="flex-1 flex items-center gap-2 px-3 py-1.5 md:py-2 bg-white/5 border border-purple-500/30 rounded-lg">
+                <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+                <span className="text-xs text-white/50 truncate">
+                  {pendingTextRef.current ? pendingTextRef.current.substring(pendingTextRef.current.length - 60) : "Listening..."}
+                </span>
+              </div>
+            ) : (
+              <>
+                <input
+                  value={inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
+                  placeholder="Type here or go live..."
+                  className="flex-1 min-w-0 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 md:py-2 text-sm text-white placeholder-white/30 outline-none focus:border-blue-400/50"
+                />
+                <button
+                  onClick={handleSendMessage} disabled={!inputText.trim()}
+                  className="px-3 md:px-4 py-1.5 md:py-2 bg-blue-500 hover:bg-blue-600 disabled:opacity-30 rounded-lg text-sm font-medium flex-shrink-0"
+                >
+                  Send
+                </button>
+              </>
+            )}
+
+            {/* Go Live / Stop button */}
             <button
-              onClick={handleSendMessage} disabled={!inputText.trim()}
-              className="px-3 md:px-4 py-1.5 md:py-2 bg-blue-500 hover:bg-blue-600 disabled:opacity-30 rounded-lg text-sm font-medium flex-shrink-0"
+              onClick={() => continuousActive ? stopContinuousMode() : startContinuousMode()}
+              className={`px-3 md:px-4 py-1.5 md:py-2 rounded-lg text-xs md:text-sm font-medium flex-shrink-0 transition-colors ${
+                continuousActive
+                  ? "bg-red-500 hover:bg-red-600 text-white"
+                  : "bg-purple-500 hover:bg-purple-600 text-white"
+              }`}
             >
-              Send
+              {continuousActive ? "Stop" : "Go Live"}
             </button>
           </div>
         </div>
