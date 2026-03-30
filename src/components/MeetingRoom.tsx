@@ -59,9 +59,11 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
   const wordCountRef = useRef(0);
   const interruptQueueRef = useRef<Array<{ personaId: string; text: string }>>([]);
   const isProcessingInterruptRef = useRef(false);
-  const waitingForResponseRef = useRef(false);  // Lock after interrupt until user responds
-  const sessionEndedRef = useRef(false);         // Hard stop flag
-  const lastInterruptPersonaRef = useRef<string | null>(null); // Track who last asked
+  const waitingForResponseRef = useRef(false);
+  const sessionEndedRef = useRef(false);
+  const lastInterruptPersonaRef = useRef<string | null>(null);
+  const consecutiveCountRef = useRef(0);          // How many times current persona has spoken in a row
+  const MAX_CONSECUTIVE = 2;                       // Max questions before forced rotation
 
   const theme = getTheme(sessionType);
   const behavior = getSessionBehavior(sessionType);
@@ -99,11 +101,19 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     });
   }, [continuousActive, onSilenceThreshold, consumeNewText, isSpeaking, stopTTS]);
 
-  const startContinuousMode = useCallback(() => {
+  const startContinuousMode = useCallback(async () => {
     setContinuousActive(true);
-    startListening();
-    startProsody();
-    startVAD();
+    // Start all audio services — each is async and needs user gesture context
+    // Do them in sequence to avoid mobile audio conflicts
+    try {
+      startListening();
+      await startVAD(); // VAD requests its own audio stream
+      startProsody();
+      console.log("[Continuous] All audio services started");
+    } catch (err) {
+      console.error("[Continuous] Failed to start audio:", err);
+      // Partial start is OK — speech recognition may still work
+    }
   }, [startListening, startProsody, startVAD]);
 
   const stopContinuousMode = useCallback(() => {
@@ -111,23 +121,46 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     stopListening();
     stopProsody();
     stopVAD();
+    console.log("[Continuous] Stopped");
   }, [stopListening, stopProsody, stopVAD]);
 
-  // Process interrupt queue sequentially — one at a time, wait for user response
+  // Process interrupt queue sequentially with round-robin fairness
   const processNextInterrupt = useCallback(() => {
     if (sessionEndedRef.current) return;
     if (isProcessingInterruptRef.current) return;
-    if (waitingForResponseRef.current) return; // Wait for user to respond first
+    if (waitingForResponseRef.current) return;
 
-    const next = interruptQueueRef.current.shift();
+    const queue = interruptQueueRef.current;
+    if (queue.length === 0) return;
+
+    // If the same persona has spoken MAX_CONSECUTIVE times in a row,
+    // try to find a DIFFERENT persona in the queue
+    let nextIdx = 0;
+    if (lastInterruptPersonaRef.current && consecutiveCountRef.current >= MAX_CONSECUTIVE) {
+      const otherIdx = queue.findIndex((q) => q.personaId !== lastInterruptPersonaRef.current);
+      if (otherIdx !== -1) {
+        nextIdx = otherIdx;
+      }
+      // If no other persona in queue, allow the same one (don't deadlock)
+    }
+
+    const next = queue.splice(nextIdx, 1)[0];
     if (!next) return;
 
+    // Track consecutive count
+    if (next.personaId === lastInterruptPersonaRef.current) {
+      consecutiveCountRef.current += 1;
+    } else {
+      consecutiveCountRef.current = 1;
+    }
+
     isProcessingInterruptRef.current = true;
+    lastInterruptPersonaRef.current = next.personaId;
+
     const persona = personas.find((p) => p.id === next.personaId);
     if (persona) {
       setChatMessages((prev) => [...prev, { from: persona.name, text: next.text, time: elapsed }]);
       setSpeakingPersonaId(next.personaId);
-      lastInterruptPersonaRef.current = next.personaId;
       setPersonaStates((prev) => ({
         ...prev,
         [next.personaId]: { ...prev[next.personaId], reaction: "speaking" },
@@ -478,7 +511,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
   );
 
   return (
-    <div className="h-[100dvh] flex flex-col text-white relative overflow-hidden">
+    <div className="h-[100dvh] h-screen flex flex-col text-white relative overflow-hidden touch-none">
       <ThemedBackground theme={theme} />
 
       {/* Generating feedback overlay */}
