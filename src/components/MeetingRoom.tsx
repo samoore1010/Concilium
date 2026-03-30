@@ -59,6 +59,9 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
   const wordCountRef = useRef(0);
   const interruptQueueRef = useRef<Array<{ personaId: string; text: string }>>([]);
   const isProcessingInterruptRef = useRef(false);
+  const waitingForResponseRef = useRef(false);  // Lock after interrupt until user responds
+  const sessionEndedRef = useRef(false);         // Hard stop flag
+  const lastInterruptPersonaRef = useRef<string | null>(null); // Track who last asked
 
   const theme = getTheme(sessionType);
   const behavior = getSessionBehavior(sessionType);
@@ -75,16 +78,26 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     checkLLMAvailability().then(setLlmAvailable);
   }, []);
 
-  // Continuous mode: use consumeNewText to get only NEW speech since last send
+  // Continuous mode: send new text on silence, and stop TTS when user starts speaking
   useEffect(() => {
     if (!continuousActive) return;
     onSilenceThreshold(() => {
+      if (sessionEndedRef.current) return;
       const newText = consumeNewText();
       if (newText.length > 0) {
+        // User spoke — unlock the response lock and stop any playing TTS
+        if (waitingForResponseRef.current) {
+          waitingForResponseRef.current = false;
+        }
+        // If audience was speaking, stop them (user is interrupting)
+        if (isSpeaking) {
+          stopTTS();
+          isProcessingInterruptRef.current = false;
+        }
         processUserInput(newText);
       }
     });
-  }, [continuousActive, onSilenceThreshold, consumeNewText]);
+  }, [continuousActive, onSilenceThreshold, consumeNewText, isSpeaking, stopTTS]);
 
   const startContinuousMode = useCallback(() => {
     setContinuousActive(true);
@@ -100,9 +113,12 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     stopVAD();
   }, [stopListening, stopProsody, stopVAD]);
 
-  // Process interrupt queue sequentially
+  // Process interrupt queue sequentially — one at a time, wait for user response
   const processNextInterrupt = useCallback(() => {
+    if (sessionEndedRef.current) return;
     if (isProcessingInterruptRef.current) return;
+    if (waitingForResponseRef.current) return; // Wait for user to respond first
+
     const next = interruptQueueRef.current.shift();
     if (!next) return;
 
@@ -111,6 +127,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     if (persona) {
       setChatMessages((prev) => [...prev, { from: persona.name, text: next.text, time: elapsed }]);
       setSpeakingPersonaId(next.personaId);
+      lastInterruptPersonaRef.current = next.personaId;
       setPersonaStates((prev) => ({
         ...prev,
         [next.personaId]: { ...prev[next.personaId], reaction: "speaking" },
@@ -122,7 +139,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     }
   }, [personas, elapsed, speak]);
 
-  // When TTS finishes, reset speaking state and process next interrupt
+  // When TTS finishes, lock for user response, then allow next interrupt
   useEffect(() => {
     if (!isSpeaking && speakingPersonaId) {
       const timer = setTimeout(() => {
@@ -132,17 +149,32 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
         }));
         setSpeakingPersonaId(null);
         isProcessingInterruptRef.current = false;
-        // Process next queued interrupt after a short pause
-        setTimeout(() => processNextInterrupt(), 500);
+
+        // After an audience member finishes speaking, wait for user response
+        // before allowing the next interrupt
+        if (behavior.allowInterruptions && interruptQueueRef.current.length > 0) {
+          waitingForResponseRef.current = true;
+          // Safety timeout: if user doesn't respond within 8s, allow next interrupt
+          setTimeout(() => {
+            if (waitingForResponseRef.current && !sessionEndedRef.current) {
+              waitingForResponseRef.current = false;
+              processNextInterrupt();
+            }
+          }, 8000);
+        }
       }, 300);
       return () => clearTimeout(timer);
     }
-  }, [isSpeaking, speakingPersonaId, processNextInterrupt]);
+  }, [isSpeaking, speakingPersonaId, behavior.allowInterruptions, processNextInterrupt]);
 
-  // Only sync speech to text input when NOT in continuous mode (manual send mode)
+  // In manual mode, sync new speech chunks to input (not accumulated transcript)
+  const lastSyncedRef = useRef(0);
   useEffect(() => {
-    if (!continuousActive && speechTranscript && speechTranscript.length > 0) {
-      setInputText(speechTranscript);
+    if (continuousActive || !speechTranscript) return;
+    const newPart = speechTranscript.substring(lastSyncedRef.current).trim();
+    if (newPart.length > 0) {
+      setInputText(newPart);
+      lastSyncedRef.current = speechTranscript.length;
     }
   }, [speechTranscript, continuousActive]);
 
@@ -171,50 +203,65 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
 
   // Shared input processing (used by both send button and continuous mode)
   const processUserInput = useCallback((text: string) => {
-    if (!text.trim()) return;
+    if (!text.trim() || sessionEndedRef.current) return;
     wordCountRef.current += text.trim().split(/\s+/).length;
     setTranscript((prev) => [...prev, text.trim()]);
     setChatMessages((prev) => [...prev, { from: "You", text: text.trim(), time: elapsed }]);
     updateMetrics(text.trim());
+
+    // User responded — unlock interrupt queue and allow next after a delay
+    if (waitingForResponseRef.current) {
+      waitingForResponseRef.current = false;
+      setTimeout(() => {
+        if (!sessionEndedRef.current) processNextInterrupt();
+      }, 1500); // Brief pause before next audience member can speak
+    }
     const newMC = messageCount + 1;
     setMessageCount(newMC);
 
     if (llmAvailable) {
       // === LLM-POWERED REACTIONS ===
+      // Build conversational context from recent chat (so LLM knows what was just asked)
+      const recentChat = chatMessages.slice(-8).map((m) => `${m.from}: ${m.text}`);
+
       getLLMReactionsBatch(
         personas.map((p) => p.id),
         text,
         sessionType,
-        transcript.slice(-5)
+        [...recentChat, `You: ${text}`]
       ).then((reactions) => {
+        if (sessionEndedRef.current) return; // Hard stop
+
+        // Pick at most ONE interrupter per batch (highest urgency)
+        let interrupterChosen = false;
+
         reactions.forEach((r) => {
+          if (sessionEndedRef.current) return;
           const persona = personas.find((p) => p.id === r.personaId);
           if (!persona) return;
 
-          // Set reaction animation
           setPersonaStates((prev) => ({
             ...prev,
             [r.personaId]: { reaction: r.reaction, lastHandRaiseAt: prev[r.personaId]?.lastHandRaiseAt },
           }));
 
-          // Handle comment/question based on interrupt behavior
           const responseText = r.question || r.comment;
           if (responseText) {
             const shouldAutoPlay = behavior.allowInterruptions
-              && (r as any).shouldInterrupt === true
-              && wordCountRef.current >= behavior.interruptMinWords;
+              && r.shouldInterrupt === true
+              && wordCountRef.current >= behavior.interruptMinWords
+              && !waitingForResponseRef.current
+              && !interrupterChosen;
 
             if (shouldAutoPlay) {
-              // AUTO-INTERRUPT: queue for sequential playback
+              interrupterChosen = true;
               interruptQueueRef.current.push({ personaId: r.personaId, text: responseText });
-              // Show raised hand while waiting in queue
               setPersonaStates((prev) => ({
                 ...prev,
                 [r.personaId]: { ...prev[r.personaId], reaction: "raised-hand" },
               }));
-              // Trigger processing if not already running
-              if (!isProcessingInterruptRef.current) {
-                setTimeout(() => processNextInterrupt(), 300 + Math.random() * 700);
+              if (!isProcessingInterruptRef.current && !waitingForResponseRef.current) {
+                setTimeout(() => processNextInterrupt(), 500 + Math.random() * 1000);
               }
             } else {
               // QUEUE: show as clickable bubble above head
@@ -250,7 +297,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
       // === KEYWORD FALLBACK ===
       fallbackKeywordReactions(text, newMC);
     }
-  }, [personas, elapsed, messageCount, personaStates, updateMetrics, llmAvailable, sessionType, transcript]);
+  }, [personas, elapsed, messageCount, personaStates, updateMetrics, llmAvailable, sessionType, transcript, chatMessages, processNextInterrupt]);
 
   // Send button handler (for manual/text mode)
   const handleSendMessage = useCallback(() => {
@@ -331,9 +378,15 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     // Guard against double-clicks
     if (isEnding) return;
     setIsEnding(true);
+    sessionEndedRef.current = true;
 
+    // Hard stop everything
     clearInterval(timerRef.current);
-    stopCamera(); stopListening(); stopTTS(); stopProsody();
+    interruptQueueRef.current = [];
+    isProcessingInterruptRef.current = false;
+    waitingForResponseRef.current = false;
+    stopCamera(); stopListening(); stopTTS(); stopProsody(); stopVAD();
+    setContinuousActive(false);
     const ft = transcript.join(" ");
 
     let feedback: FeedbackItem[];
