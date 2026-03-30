@@ -13,6 +13,7 @@ import { Teleprompter } from "./Teleprompter";
 import { QuestionQueue, QueuedQuestion, handRaiseToQueuedQuestion } from "./QuestionQueue";
 import { ScriptConfig } from "./ScriptSetup";
 import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
+import { useElevenLabsSTT } from "../hooks/useElevenLabsSTT";
 import { useCamera } from "../hooks/useCamera";
 import { useSpeechMetrics } from "../hooks/useSpeechMetrics";
 import { useProsody } from "../hooks/useProsody";
@@ -79,7 +80,17 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
   const behavior = getSessionBehavior(sessionType);
 
   const { isActive: isCameraActive, startCamera, stopCamera, attachVideo } = useCamera();
-  const { transcript: speechTranscript, interimTranscript, isListening, startListening, stopListening, consumeNewText } = useSpeechRecognition();
+  // Speech recognition — prefer ElevenLabs STT (real-time WebSocket) over Web Speech API
+  const webSpeech = useSpeechRecognition();
+  const elSTT = useElevenLabsSTT();
+  const useElSTT = elSTT.supported;
+
+  const speechTranscript = useElSTT ? elSTT.transcript : webSpeech.transcript;
+  const interimTranscript = useElSTT ? elSTT.interimTranscript : webSpeech.interimTranscript;
+  const isListening = useElSTT ? elSTT.isListening : webSpeech.isListening;
+  const startListening = useElSTT ? elSTT.startListening : webSpeech.startListening;
+  const stopListening = useElSTT ? elSTT.stopListening : webSpeech.stopListening;
+  const consumeNewText = useElSTT ? elSTT.consumeNewText : webSpeech.consumeNewText;
   const { metrics: speechMetrics, updateMetrics } = useSpeechMetrics();
   const { metrics: prosodyMetrics, isAnalyzing: isProsodyActive, startAnalysis: startProsody, stopAnalysis: stopProsody, getTimeline } = useProsody();
   const { startRecording, stopRecording, getRecording } = useAudioRecorder();
