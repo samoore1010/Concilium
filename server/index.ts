@@ -65,30 +65,50 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
-// ElevenLabs diagnostic — test the key
+// ElevenLabs diagnostic — test TTS directly
 app.get("/api/tts/test-elevenlabs", async (_req, res) => {
   const apiKey = process.env.ELEVENLABS_API_KEY;
   if (!apiKey) return res.json({ status: "no key", keyLength: 0 });
 
-  try {
-    const keyPreview = apiKey.substring(0, 4) + "..." + apiKey.substring(apiKey.length - 4);
+  const keyPreview = apiKey.substring(0, 4) + "..." + apiKey.substring(apiKey.length - 4);
 
-    // Test the key by calling the user endpoint
-    const userRes = await fetch("https://api.elevenlabs.io/v1/user", {
+  // Test 1: models endpoint (should work with any valid key)
+  let modelsStatus = "untested";
+  try {
+    const modelsRes = await fetch("https://api.elevenlabs.io/v1/models", {
       headers: { "xi-api-key": apiKey },
     });
-    const userData = userRes.ok ? await userRes.json() : await userRes.text();
+    modelsStatus = modelsRes.ok ? "ok" : `error ${modelsRes.status}`;
+  } catch (e: any) { modelsStatus = e.message; }
 
-    res.json({
-      status: userRes.ok ? "ok" : "error",
-      httpCode: userRes.status,
-      keyPreview,
-      keyLength: apiKey.length,
-      response: userRes.ok ? { subscription: userData.subscription?.tier } : userData,
+  // Test 2: actual TTS call with a short text
+  let ttsStatus = "untested";
+  let ttsDetail = "";
+  try {
+    const ttsRes = await fetch("https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM", {
+      method: "POST",
+      headers: {
+        "xi-api-key": apiKey,
+        "Content-Type": "application/json",
+        "Accept": "audio/mpeg",
+      },
+      body: JSON.stringify({
+        text: "Test.",
+        model_id: "eleven_multilingual_v2",
+        voice_settings: { stability: 0.5, similarity_boost: 0.75 },
+      }),
     });
-  } catch (err: any) {
-    res.json({ status: "error", message: err.message });
-  }
+    if (ttsRes.ok) {
+      const size = (await ttsRes.arrayBuffer()).byteLength;
+      ttsStatus = "ok";
+      ttsDetail = `audio ${size} bytes`;
+    } else {
+      ttsStatus = `error ${ttsRes.status}`;
+      ttsDetail = await ttsRes.text();
+    }
+  } catch (e: any) { ttsStatus = e.message; }
+
+  res.json({ keyPreview, keyLength: apiKey.length, modelsStatus, ttsStatus, ttsDetail });
 });
 
 // === TTS Endpoint (multi-provider) ===
