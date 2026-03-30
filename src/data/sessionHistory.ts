@@ -8,6 +8,17 @@ export interface ProsodyRecord {
   silenceRatio: number;
 }
 
+export interface StoredFeedback {
+  personaId: string;
+  personaName: string;
+  overallScore: number;
+  summary: string;
+  strengths: string[];
+  weaknesses: string[];
+  suggestion: string;
+  emotionalResponse: string;
+}
+
 export interface SessionRecord {
   id: string;
   date: number;
@@ -19,6 +30,8 @@ export interface SessionRecord {
   duration: number;
   speechMetrics: SpeechMetrics;
   prosodyMetrics?: ProsodyRecord;
+  feedback?: StoredFeedback[];
+  transcript?: string;
 }
 
 let sessionHistory: SessionRecord[] = [];

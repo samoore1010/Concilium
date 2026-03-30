@@ -287,6 +287,8 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
       wordCount: ft.split(/\s+/).filter(Boolean).length, duration: elapsed,
       speechMetrics: { wordsPerMinute: speechMetrics.wordsPerMinute, fillerWordCount: speechMetrics.fillerWordCount, longestPause: speechMetrics.longestPause, vocabularyScore: speechMetrics.vocabularyScore },
       prosodyMetrics: { averageVolume: prosodyMetrics.averageVolume, volumeVariation: prosodyMetrics.volumeVariation, pitchVariation: prosodyMetrics.pitchVariation, energyLevel: prosodyMetrics.energyLevel, silenceRatio: prosodyMetrics.silenceRatio },
+      feedback,
+      transcript: ft,
     });
     onEndSession(feedback, ft);
   };

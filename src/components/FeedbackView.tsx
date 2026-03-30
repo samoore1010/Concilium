@@ -8,9 +8,10 @@ interface FeedbackViewProps {
   feedback: FeedbackItem[];
   transcript: string;
   onNewSession: () => void;
+  onViewSession?: (session: SessionRecord) => void;
 }
 
-export function FeedbackView({ feedback, transcript, onNewSession }: FeedbackViewProps) {
+export function FeedbackView({ feedback, transcript, onNewSession, onViewSession }: FeedbackViewProps) {
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [tab, setTab] = useState<"feedback" | "history">("feedback");
   const [sessionHistory, setSessionHistory] = useState<SessionRecord[]>([]);
@@ -209,7 +210,11 @@ export function FeedbackView({ feedback, transcript, onNewSession }: FeedbackVie
                   const scores = Object.values(session.perPersonaScores);
                   const avg = scores.length > 0 ? scores.reduce((a, b) => a + b, 0) / scores.length : session.overallScore || 0;
                   return (
-                    <div key={session.id} className="rounded-lg border border-white/10 bg-white/[0.02] p-3 md:p-4">
+                    <button
+                      key={session.id}
+                      onClick={() => session.feedback && onViewSession?.(session)}
+                      className={`rounded-lg border border-white/10 bg-white/[0.02] p-3 md:p-4 w-full text-left transition-all ${session.feedback ? "hover:bg-white/[0.05] cursor-pointer" : ""}`}
+                    >
                       <div className="flex items-start justify-between mb-2 md:mb-3">
                         <div>
                           <div className="text-xs md:text-sm font-medium mb-0.5">{session.sessionType.replace(/-/g, " ")}</div>
@@ -225,7 +230,8 @@ export function FeedbackView({ feedback, transcript, onNewSession }: FeedbackVie
                         <div className="bg-white/5 rounded px-2 py-1"><div className="text-white/50">Duration</div><div className="font-medium">{Math.floor(session.duration / 60)}m</div></div>
                         <div className="bg-white/5 rounded px-2 py-1"><div className="text-white/50">WPM</div><div className="font-medium">{session.speechMetrics.wordsPerMinute}</div></div>
                       </div>
-                    </div>
+                      {session.feedback && <div className="text-[10px] text-blue-400 mt-2">Click to view full report</div>}
+                    </button>
                   );
                 })}
               </div>
