@@ -124,25 +124,19 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
           const persona = personas.find((p) => p.id === r.personaId);
           if (!persona) return;
 
-          // Set reaction
+          // Set reaction animation
           setPersonaStates((prev) => ({
             ...prev,
             [r.personaId]: { reaction: r.reaction, lastHandRaiseAt: prev[r.personaId]?.lastHandRaiseAt },
           }));
 
-          // Post comment to chat if persona has one
-          if (r.comment) {
-            setTimeout(() => {
-              setChatMessages((prev) => [...prev, { from: persona.name, text: r.comment!, time: elapsed }]);
-            }, 500 + Math.random() * 1000);
-          }
-
-          // Queue question if persona has one
-          if (r.question) {
+          // Queue comment or question as a clickable bubble — NOT directly to chat
+          const text = r.question || r.comment;
+          if (text) {
             const queued: QueuedQuestion = {
-              id: `${r.personaId}-${Date.now()}`,
+              id: `${r.personaId}-${Date.now()}-${Math.random()}`,
               personaId: r.personaId,
-              question: r.question,
+              question: text,
               timestamp: Date.now(),
             };
             setQuestionQueue((prev) => [...prev, queued]);
@@ -183,9 +177,22 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
             ...prev,
             [persona.id]: { reaction: re.type, emoji: re.emoji, lastHandRaiseAt: prev[persona.id]?.lastHandRaiseAt },
           }));
+          // Queue comment as clickable bubble (not directly to chat)
           if (Math.random() > 0.7) {
             const comment = getReactiveComment(persona, re.type);
-            if (comment) setTimeout(() => setChatMessages((prev) => [...prev, { from: persona.name, text: comment, time: elapsed }]), 1000 + Math.random() * 1500);
+            if (comment) {
+              setTimeout(() => {
+                setQuestionQueue((prev) => [...prev, {
+                  id: `${persona.id}-${Date.now()}-${Math.random()}`,
+                  personaId: persona.id,
+                  question: comment,
+                  timestamp: Date.now(),
+                }]);
+                setPersonaStates((prev) => ({
+                  ...prev, [persona.id]: { ...prev[persona.id], reaction: "raised-hand" },
+                }));
+              }, 1000 + Math.random() * 1500);
+            }
           }
           setTimeout(() => {
             setPersonaStates((prev) => ({
@@ -217,7 +224,7 @@ export function MeetingRoom({ personas, sessionType, onEndSession, onBack }: Mee
     setSpeakingPersonaId(q.personaId);
     setPersonaStates((prev) => ({ ...prev, [q.personaId]: { ...prev[q.personaId], reaction: "speaking" } }));
     if (persona) setChatMessages((prev) => [...prev, { from: persona.name, text: q.question, time: elapsed }]);
-    speak(q.question, getVoiceConfig(q.personaId));
+    speak(q.question, q.personaId, getVoiceConfig(q.personaId));
     setQuestionQueue((prev) => prev.filter((x) => x.id !== q.id));
   };
 
