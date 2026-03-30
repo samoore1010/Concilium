@@ -53,7 +53,7 @@ export async function getLLMReactionsBatch(
     comment: r.comment || null,
     question: r.question || null,
     reasoning: r.reasoning || "",
-    shouldInterrupt: r.shouldInterrupt === true,
+    shouldInterrupt: r.shouldInterrupt === true || r.shouldInterrupt === "true",
     urgency: r.urgency || "low",
   }));
 }
