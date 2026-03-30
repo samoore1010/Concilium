@@ -167,14 +167,7 @@ async function ttsElevenLabs(text: string, personaId: string, res: any) {
       const errBody = await response.text();
       console.error(`[TTS:ElevenLabs] API error ${response.status}: ${errBody}`);
 
-      // If ElevenLabs fails and OpenAI is available, try OpenAI as fallback
-      if (process.env.OPENAI_API_KEY) {
-        console.log("[TTS:ElevenLabs] Falling back to OpenAI");
-        return ttsOpenAI(text, personaId, 1.0, res);
-      }
-
       throw new Error(`ElevenLabs API returned ${response.status}: ${errBody}`);
-    }
     }
 
     const buffer = Buffer.from(await response.arrayBuffer());
