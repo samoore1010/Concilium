@@ -69,7 +69,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
   const behavior = getSessionBehavior(sessionType);
 
   const { isActive: isCameraActive, startCamera, stopCamera, attachVideo } = useCamera();
-  const { transcript: speechTranscript, isListening, startListening, stopListening, consumeNewText } = useSpeechRecognition();
+  const { transcript: speechTranscript, interimTranscript, isListening, startListening, stopListening, consumeNewText } = useSpeechRecognition();
   const { metrics: speechMetrics, updateMetrics } = useSpeechMetrics();
   const { metrics: prosodyMetrics, isAnalyzing: isProsodyActive, startAnalysis: startProsody, stopAnalysis: stopProsody } = useProsody();
   const { speak, stop: stopTTS, isSpeaking, availableProviders, activeProvider, setProvider } = useTTS();
@@ -200,16 +200,13 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     }
   }, [isSpeaking, speakingPersonaId, behavior.allowInterruptions, processNextInterrupt]);
 
-  // In manual mode, sync new speech chunks to input (not accumulated transcript)
-  const lastSyncedRef = useRef(0);
+  // In manual mode, show interim transcript in input (clears when finalized)
   useEffect(() => {
-    if (continuousActive || !speechTranscript) return;
-    const newPart = speechTranscript.substring(lastSyncedRef.current).trim();
-    if (newPart.length > 0) {
-      setInputText(newPart);
-      lastSyncedRef.current = speechTranscript.length;
+    if (continuousActive) return;
+    if (interimTranscript) {
+      setInputText(interimTranscript);
     }
-  }, [speechTranscript, continuousActive]);
+  }, [interimTranscript, continuousActive]);
 
   useEffect(() => {
     timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
@@ -283,17 +280,25 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
           }
         });
 
-        // Pick ONE interrupter — prefer someone who HASN'T spoken recently
+        // Pick ONE interrupter — prefer different personas and higher urgency
         let chosenInterrupter: typeof reactions[0] | null = null;
         if (interrupters.length > 0) {
-          // First try: someone different from the last interrupter
-          const different = interrupters.find((r) => r.personaId !== lastInterruptPersonaRef.current);
-          if (different && consecutiveCountRef.current >= MAX_CONSECUTIVE) {
-            chosenInterrupter = different;
-          } else {
-            // If the last persona hasn't hit the limit, or no one else wants to interrupt, use first available
-            chosenInterrupter = interrupters[0];
-          }
+          // Sort by: different persona first, then by urgency
+          const scored = interrupters.map((r) => {
+            let score = 0;
+            // Strongly prefer someone different from last speaker
+            if (r.personaId !== lastInterruptPersonaRef.current) score += 100;
+            // Prefer if last speaker hit consecutive limit
+            if (consecutiveCountRef.current >= MAX_CONSECUTIVE && r.personaId !== lastInterruptPersonaRef.current) score += 50;
+            // Use urgency as tiebreaker
+            if (r.urgency === "high") score += 30;
+            else if (r.urgency === "medium") score += 15;
+            // Add randomness to avoid predictable ordering
+            score += Math.random() * 20;
+            return { reaction: r, score };
+          });
+          scored.sort((a, b) => b.score - a.score);
+          chosenInterrupter = scored[0].reaction;
         }
 
         // Process all reactions
@@ -601,6 +606,11 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
 
           {/* AUDIENCE AREA with teleprompter overlay */}
           <div className="flex-1 p-2 md:p-4 min-h-0 overflow-hidden relative">
+            {/* Mobile self-view — top right corner */}
+            <div className="md:hidden absolute top-1 right-1 z-20">
+              {selfView("w-16 h-12 rounded")}
+            </div>
+
             <ThemedLayout theme={theme}>
               {audienceTiles}
             </ThemedLayout>
@@ -698,60 +708,68 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
         </AnimatePresence>
 
         {/* === BOTTOM BAR === */}
-        <div className="border-t border-white/5 bg-black/50 backdrop-blur-sm px-2 md:px-4 py-1 md:py-2 flex-shrink-0 safe-bottom">
-          <div className="max-w-3xl mx-auto flex gap-1 md:gap-2 items-center">
-            <ToolbarBtn icon="mic" active={isListening} color={theme.accentColor} onClick={() => {
-              if (isListening) { stopListening(); stopProsody(); }
-              else { startListening(); startProsody(); }
-            }} />
-            <ToolbarBtn icon="video" active={isCameraActive} color={theme.accentColor} onClick={() => isCameraActive ? stopCamera() : startCamera()} />
-            <button
-              onClick={() => setMobilePanel(mobilePanel ? null : "chat")}
-              className="md:hidden w-10 h-10 flex items-center justify-center rounded-full bg-white/5 text-white/50 relative"
-            >
-              <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
-                <path d="M2.5 2A1.5 1.5 0 001 3.5v8A1.5 1.5 0 002.5 13H4l4 3v-3h4.5a1.5 1.5 0 001.5-1.5v-8A1.5 1.5 0 0012.5 2h-10z" />
-              </svg>
-              {questionQueue.length > 0 && <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-red-500" />}
-            </button>
+        <div className="border-t border-white/5 bg-black/50 backdrop-blur-sm flex-shrink-0 safe-bottom">
+          {/* Live indicator (separate row when active, visible above toolbar) */}
+          {continuousActive && (
+            <div className="px-3 py-1 border-b border-white/5 flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse flex-shrink-0" />
+              <span className="text-[11px] text-white/40 truncate flex-1">Listening...</span>
+              <button
+                onClick={stopContinuousMode}
+                className="px-2 py-0.5 bg-red-500/20 text-red-300 rounded text-[10px] font-medium flex-shrink-0"
+              >
+                Stop
+              </button>
+            </div>
+          )}
 
-            {/* Continuous mode: live indicator or text input */}
-            {continuousActive ? (
-              <div className="flex-1 flex items-center gap-2 px-3 py-1.5 md:py-2 bg-white/5 border border-purple-500/30 rounded-lg">
-                <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                <span className="text-xs text-white/50 truncate">
-                  {speechTranscript ? speechTranscript.substring(Math.max(0, speechTranscript.length - 60)) : "Listening..."}
-                </span>
-              </div>
-            ) : (
-              <>
-                <input
-                  value={inputText}
-                  onChange={(e) => setInputText(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
-                  placeholder="Type here or go live..."
-                  className="flex-1 min-w-0 bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 md:py-2 text-sm text-white placeholder-white/30 outline-none focus:border-blue-400/50"
-                />
+          {/* Toolbar row */}
+          <div className="px-2 md:px-4 py-1.5 md:py-2">
+            <div className="max-w-3xl mx-auto flex gap-1.5 md:gap-2 items-center">
+              <ToolbarBtn icon="mic" active={isListening} color={theme.accentColor} onClick={() => {
+                if (isListening) { stopListening(); stopProsody(); }
+                else { startListening(); startProsody(); }
+              }} />
+              <ToolbarBtn icon="video" active={isCameraActive} color={theme.accentColor} onClick={() => isCameraActive ? stopCamera() : startCamera()} />
+              <button
+                onClick={() => setMobilePanel(mobilePanel ? null : "chat")}
+                className="md:hidden w-10 h-10 flex items-center justify-center rounded-full bg-white/5 text-white/50 relative flex-shrink-0"
+              >
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M2.5 2A1.5 1.5 0 001 3.5v8A1.5 1.5 0 002.5 13H4l4 3v-3h4.5a1.5 1.5 0 001.5-1.5v-8A1.5 1.5 0 0012.5 2h-10z" />
+                </svg>
+                {questionQueue.length > 0 && <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-red-500" />}
+              </button>
+
+              {/* Text input (hidden when continuous mode is on) */}
+              {!continuousActive && (
+                <>
+                  <input
+                    value={inputText}
+                    onChange={(e) => setInputText(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleSendMessage()}
+                    placeholder="Type here..."
+                    className="flex-1 min-w-0 bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-white/30 outline-none focus:border-blue-400/50"
+                  />
+                  <button
+                    onClick={handleSendMessage} disabled={!inputText.trim()}
+                    className="px-3 py-2 bg-blue-500 hover:bg-blue-600 disabled:opacity-30 rounded-lg text-xs font-medium flex-shrink-0"
+                  >
+                    Send
+                  </button>
+                </>
+              )}
+
+              {/* Go Live button (when not already live) */}
+              {!continuousActive && (
                 <button
-                  onClick={handleSendMessage} disabled={!inputText.trim()}
-                  className="px-3 md:px-4 py-1.5 md:py-2 bg-blue-500 hover:bg-blue-600 disabled:opacity-30 rounded-lg text-sm font-medium flex-shrink-0"
+                  onClick={() => startContinuousMode()}
+                  className="px-3 py-2 rounded-lg text-xs font-medium flex-shrink-0 bg-purple-500 hover:bg-purple-600 text-white whitespace-nowrap"
                 >
-                  Send
+                  Go Live
                 </button>
-              </>
-            )}
-
-            {/* Go Live / Stop button */}
-            <button
-              onClick={() => continuousActive ? stopContinuousMode() : startContinuousMode()}
-              className={`px-3 md:px-4 py-1.5 md:py-2 rounded-lg text-xs md:text-sm font-medium flex-shrink-0 transition-colors ${
-                continuousActive
-                  ? "bg-red-500 hover:bg-red-600 text-white"
-                  : "bg-purple-500 hover:bg-purple-600 text-white"
-              }`}
-            >
-              {continuousActive ? "Stop" : "Go Live"}
-            </button>
+              )}
+            </div>
           </div>
         </div>
       </div>
