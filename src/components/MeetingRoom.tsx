@@ -80,40 +80,52 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     checkLLMAvailability().then(setLlmAvailable);
   }, []);
 
-  // Continuous mode: send new text on silence, and stop TTS when user starts speaking
+  // Continuous mode: two auto-send mechanisms
+  // 1. VAD silence detection (works well on desktop)
+  // 2. Speech recognition finalization (fallback, works on all platforms)
   useEffect(() => {
     if (!continuousActive) return;
     onSilenceThreshold(() => {
       if (sessionEndedRef.current) return;
       const newText = consumeNewText();
       if (newText.length > 0) {
-        // User spoke — unlock the response lock and stop any playing TTS
-        if (waitingForResponseRef.current) {
-          waitingForResponseRef.current = false;
-        }
-        // If audience was speaking, stop them (user is interrupting)
-        if (isSpeaking) {
-          stopTTS();
-          isProcessingInterruptRef.current = false;
-        }
+        if (waitingForResponseRef.current) waitingForResponseRef.current = false;
+        if (isSpeaking) { stopTTS(); isProcessingInterruptRef.current = false; }
         processUserInput(newText);
       }
     });
   }, [continuousActive, onSilenceThreshold, consumeNewText, isSpeaking, stopTTS]);
 
+  // Fallback: auto-send based on speech recognition finalization
+  // This catches cases where VAD doesn't fire (mobile audio context issues)
+  const lastSentTranscriptRef = useRef("");
+  useEffect(() => {
+    if (!continuousActive || !speechTranscript) return;
+    // Only process if transcript has grown since last send
+    if (speechTranscript.length <= lastSentTranscriptRef.current.length) return;
+
+    const timer = setTimeout(() => {
+      if (sessionEndedRef.current || !continuousActive) return;
+      const newText = consumeNewText();
+      if (newText.length > 3) { // Minimum 3 chars to avoid noise
+        lastSentTranscriptRef.current = speechTranscript;
+        if (waitingForResponseRef.current) waitingForResponseRef.current = false;
+        if (isSpeaking) { stopTTS(); isProcessingInterruptRef.current = false; }
+        processUserInput(newText);
+      }
+    }, 2000); // 2 second debounce after last speech recognition update
+
+    return () => clearTimeout(timer);
+  }, [continuousActive, speechTranscript, consumeNewText, isSpeaking, stopTTS]);
+
   const startContinuousMode = useCallback(async () => {
     setContinuousActive(true);
-    // Start all audio services — each is async and needs user gesture context
-    // Do them in sequence to avoid mobile audio conflicts
-    try {
-      startListening();
-      await startVAD(); // VAD requests its own audio stream
-      startProsody();
-      console.log("[Continuous] All audio services started");
-    } catch (err) {
-      console.error("[Continuous] Failed to start audio:", err);
-      // Partial start is OK — speech recognition may still work
-    }
+    lastSentTranscriptRef.current = "";
+    startListening();
+    // VAD and prosody are optional enhancements — don't block if they fail
+    try { await startVAD(); } catch (e) { console.log("[Continuous] VAD unavailable, using speech recognition fallback"); }
+    try { startProsody(); } catch (e) { console.log("[Continuous] Prosody unavailable"); }
+    console.log("[Continuous] Started");
   }, [startListening, startProsody, startVAD]);
 
   const stopContinuousMode = useCallback(() => {
