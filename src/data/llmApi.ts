@@ -6,6 +6,8 @@ export interface LLMReaction {
   comment: string | null;
   question: string | null;
   reasoning: string;
+  shouldInterrupt?: boolean;
+  urgency?: "low" | "medium" | "high";
 }
 
 export interface LLMFeedback {
@@ -51,6 +53,8 @@ export async function getLLMReactionsBatch(
     comment: r.comment || null,
     question: r.question || null,
     reasoning: r.reasoning || "",
+    shouldInterrupt: r.shouldInterrupt === true,
+    urgency: r.urgency || "low",
   }));
 }
 
