@@ -213,6 +213,7 @@
 /* ===== Utilities ===== */
 
 .mirror { transform: scaleX(-1); }
+.scroll-touch { -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 
 .frosted-glass {
   backdrop-filter: blur(10px);

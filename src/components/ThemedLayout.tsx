@@ -28,6 +28,17 @@ export function ThemedLayout({ theme, children }: ThemedLayoutProps) {
     },
   };
 
+  // On mobile, always use responsive grid (specialized layouts need too much horizontal space)
+  const isMobile = typeof window !== "undefined" && window.innerWidth < 768;
+
+  if (isMobile) {
+    return (
+      <GridLayout containerVariants={containerVariants} tileVariants={tileVariants} totalTiles={children.length}>
+        {children}
+      </GridLayout>
+    );
+  }
+
   switch (theme.tileLayout) {
     case "panel":
       return (
@@ -187,6 +198,8 @@ function TheaterLayout({ children, containerVariants, tileVariants }: LayoutProp
 
 // Default grid
 function GridLayout({ children, containerVariants, tileVariants, totalTiles = 7 }: LayoutProps) {
+  // Mobile: always 2 cols, auto-rows with min height
+  // Desktop: adaptive cols based on count
   const gridCols =
     totalTiles <= 2
       ? "grid-cols-2"
@@ -198,7 +211,7 @@ function GridLayout({ children, containerVariants, tileVariants, totalTiles = 7 
 
   return (
     <motion.div
-      className={`grid ${gridCols} gap-2 md:gap-3 h-full`}
+      className={`grid ${gridCols} gap-1.5 md:gap-3 h-full auto-rows-fr overflow-y-auto md:overflow-hidden scroll-touch`}
       variants={containerVariants}
       initial="hidden"
       animate="visible"
