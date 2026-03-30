@@ -7,12 +7,12 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <title>PitchPractice — AI Audience Simulator</title>
     <style>
-      html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #0f0f23; }
-      #root { height: 100dvh; height: 100vh; overflow: hidden; }
-      /* Prevent input zoom on mobile — must be 16px+ */
+      * { box-sizing: border-box; }
+      html { height: 100%; background: #0f0f23; }
+      body { margin: 0; padding: 0; height: 100%; background: #0f0f23; overscroll-behavior-y: contain; }
+      #root { min-height: 100%; min-height: 100dvh; }
+      /* Prevent iOS input zoom — inputs must be 16px+ */
       input, select, textarea { font-size: 16px !important; }
-      /* Prevent iOS rubber-banding */
-      body { overscroll-behavior: none; -webkit-overflow-scrolling: touch; }
     </style>
   </head>
   <body>

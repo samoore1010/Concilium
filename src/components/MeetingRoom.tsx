@@ -263,11 +263,40 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
         sessionType,
         [...recentChat, `You: ${text}`]
       ).then((reactions) => {
-        if (sessionEndedRef.current) return; // Hard stop
+        if (sessionEndedRef.current) return;
 
-        // Pick at most ONE interrupter per batch (highest urgency)
-        let interrupterChosen = false;
+        // Separate interrupters from non-interrupters
+        const interrupters: typeof reactions = [];
+        const nonInterrupters: typeof reactions = [];
 
+        reactions.forEach((r) => {
+          const responseText = r.question || r.comment;
+          const canInterrupt = behavior.allowInterruptions
+            && r.shouldInterrupt === true
+            && responseText
+            && wordCountRef.current >= behavior.interruptMinWords
+            && !waitingForResponseRef.current;
+          if (canInterrupt) {
+            interrupters.push(r);
+          } else {
+            nonInterrupters.push(r);
+          }
+        });
+
+        // Pick ONE interrupter — prefer someone who HASN'T spoken recently
+        let chosenInterrupter: typeof reactions[0] | null = null;
+        if (interrupters.length > 0) {
+          // First try: someone different from the last interrupter
+          const different = interrupters.find((r) => r.personaId !== lastInterruptPersonaRef.current);
+          if (different && consecutiveCountRef.current >= MAX_CONSECUTIVE) {
+            chosenInterrupter = different;
+          } else {
+            // If the last persona hasn't hit the limit, or no one else wants to interrupt, use first available
+            chosenInterrupter = interrupters[0];
+          }
+        }
+
+        // Process all reactions
         reactions.forEach((r) => {
           if (sessionEndedRef.current) return;
           const persona = personas.find((p) => p.id === r.personaId);
@@ -280,14 +309,8 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
 
           const responseText = r.question || r.comment;
           if (responseText) {
-            const shouldAutoPlay = behavior.allowInterruptions
-              && r.shouldInterrupt === true
-              && wordCountRef.current >= behavior.interruptMinWords
-              && !waitingForResponseRef.current
-              && !interrupterChosen;
-
-            if (shouldAutoPlay) {
-              interrupterChosen = true;
+            if (r === chosenInterrupter) {
+              // This persona gets to interrupt
               interruptQueueRef.current.push({ personaId: r.personaId, text: responseText });
               setPersonaStates((prev) => ({
                 ...prev,
@@ -511,7 +534,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
   );
 
   return (
-    <div className="h-[100dvh] h-screen flex flex-col text-white relative overflow-hidden touch-none">
+    <div className="h-[100dvh] flex flex-col text-white relative overflow-hidden session-view">
       <ThemedBackground theme={theme} />
 
       {/* Generating feedback overlay */}
