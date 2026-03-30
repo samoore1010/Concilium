@@ -149,7 +149,8 @@ async function ttsOpenAI(text: string, personaId: string, speed: number, res: an
     });
 
     const buffer = Buffer.from(await response.arrayBuffer());
-    res.set({ "Content-Type": "audio/mpeg", "Content-Length": buffer.length.toString(), "Cache-Control": "public, max-age=3600" });
+    // Stream the audio to reduce perceived latency
+    res.set({ "Content-Type": "audio/mpeg", "Content-Length": buffer.length.toString() });
     res.send(buffer);
   } catch (error: any) {
     console.error("[TTS:OpenAI] Error:", error.message);
@@ -191,13 +192,59 @@ async function ttsElevenLabs(text: string, personaId: string, res: any) {
     }
 
     const buffer = Buffer.from(await response.arrayBuffer());
-    res.set({ "Content-Type": "audio/mpeg", "Content-Length": buffer.length.toString(), "Cache-Control": "public, max-age=3600" });
+    // Stream the audio to reduce perceived latency
+    res.set({ "Content-Type": "audio/mpeg", "Content-Length": buffer.length.toString() });
     res.send(buffer);
   } catch (error: any) {
     console.error("[TTS:ElevenLabs] Error:", error.message);
     res.status(500).json({ error: "ElevenLabs TTS failed", detail: error.message });
   }
 }
+
+// === Script Generation ===
+
+app.post("/api/generate-script", async (req, res) => {
+  const client = getClient();
+  if (!client) return res.status(503).json({ error: "LLM not configured." });
+
+  const { description, sessionType, durationMinutes } = req.body;
+  if (!description) return res.status(400).json({ error: "description required" });
+
+  const duration = durationMinutes || 3;
+  const wordCount = duration * 130; // ~130 WPM target
+
+  try {
+    console.log(`[Script] Generating ${duration}min script for: "${description.substring(0, 50)}..."`);
+
+    const message = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 2000,
+      system: "You are an expert speechwriter. Generate scripts that are natural to speak aloud — conversational, clear, with natural pause points. Do not include stage directions or annotations. Just the spoken words.",
+      messages: [{
+        role: "user",
+        content: `Write a ${duration}-minute ${sessionType?.replace(/-/g, " ") || "presentation"} script (approximately ${wordCount} words) based on this description:
+
+"${description}"
+
+Requirements:
+- Natural spoken language (not written prose)
+- Clear structure with a strong opening, body, and close
+- Include rhetorical questions and pause-worthy moments
+- Appropriate for the session type
+- Approximately ${wordCount} words
+
+Return ONLY the script text, no titles or annotations.`,
+      }],
+    });
+
+    const text = message.content[0].type === "text" ? message.content[0].text : "";
+    console.log(`[Script] Generated ${text.split(/\s+/).length} words`);
+    res.json({ script: text.trim() });
+  } catch (error: any) {
+    console.error("[Script] Error:", error.message);
+    res.status(500).json({ error: "Failed to generate script", detail: error.message });
+  }
+});
 
 // === LLM Reaction Endpoints ===
 
