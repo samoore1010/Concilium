@@ -16,15 +16,23 @@ import { useSpeechRecognition } from "../hooks/useSpeechRecognition";
 import { useCamera } from "../hooks/useCamera";
 import { useSpeechMetrics } from "../hooks/useSpeechMetrics";
 import { useProsody } from "../hooks/useProsody";
+import { useAudioRecorder } from "../hooks/useAudioRecorder";
 import { useVAD } from "../hooks/useVAD";
 import { useTTS } from "../hooks/useTTS";
 import { addSession, SessionRecord } from "../data/sessionHistory";
+
+export interface SessionRecordingData {
+  audioUrl: string;
+  duration: number;
+  timeline: import("../hooks/useProsody").ProsodyFrame[];
+  chatMessages: { from: string; text: string; time: number }[];
+}
 
 interface MeetingRoomProps {
   personas: Persona[];
   sessionType: string;
   scriptConfig?: ScriptConfig;
-  onEndSession: (feedback: FeedbackItem[], transcript: string) => void;
+  onEndSession: (feedback: FeedbackItem[], transcript: string, recording?: SessionRecordingData) => void;
   onBack: () => void;
 }
 
@@ -73,7 +81,8 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
   const { isActive: isCameraActive, startCamera, stopCamera, attachVideo } = useCamera();
   const { transcript: speechTranscript, interimTranscript, isListening, startListening, stopListening, consumeNewText } = useSpeechRecognition();
   const { metrics: speechMetrics, updateMetrics } = useSpeechMetrics();
-  const { metrics: prosodyMetrics, isAnalyzing: isProsodyActive, startAnalysis: startProsody, stopAnalysis: stopProsody } = useProsody();
+  const { metrics: prosodyMetrics, isAnalyzing: isProsodyActive, startAnalysis: startProsody, stopAnalysis: stopProsody, getTimeline } = useProsody();
+  const { startRecording, stopRecording, getRecording } = useAudioRecorder();
   const { speak, stop: stopTTS, isSpeaking, availableProviders, activeProvider, setProvider, debugLog } = useTTS();
   const { start: startVAD, stop: stopVAD, onSilenceThreshold } = useVAD(behavior.silenceThresholdMs);
 
@@ -124,9 +133,9 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     setContinuousActive(true);
     lastSentTranscriptRef.current = "";
     startListening();
-    // VAD and prosody are optional enhancements — don't block if they fail
-    try { await startVAD(); } catch (e) { console.log("[Continuous] VAD unavailable, using speech recognition fallback"); }
+    try { await startVAD(); } catch (e) { console.log("[Continuous] VAD unavailable"); }
     try { startProsody(); } catch (e) { console.log("[Continuous] Prosody unavailable"); }
+    try { await startRecording(); } catch (e) { console.log("[Continuous] Recording unavailable"); }
     console.log("[Continuous] Started");
   }, [startListening, startProsody, startVAD]);
 
@@ -472,7 +481,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     interruptQueueRef.current = [];
     isProcessingInterruptRef.current = false;
     waitingForResponseRef.current = false;
-    stopCamera(); stopListening(); stopTTS(); stopProsody(); stopVAD();
+    stopCamera(); stopListening(); stopTTS(); stopProsody(); stopVAD(); stopRecording();
     setContinuousActive(false);
     const ft = transcript.join(" ");
 
@@ -530,7 +539,17 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
       feedback,
       transcript: ft,
     });
-    onEndSession(feedback, ft);
+    // Collect recording data
+    const recording = getRecording();
+    const timeline = getTimeline();
+    const recordingData: SessionRecordingData | undefined = recording.url ? {
+      audioUrl: recording.url,
+      duration: recording.duration,
+      timeline,
+      chatMessages: [...chatMessages],
+    } : undefined;
+
+    onEndSession(feedback, ft, recordingData);
   };
 
   const fmt = (s: number) => `${Math.floor(s / 60).toString().padStart(2, "0")}:${(s % 60).toString().padStart(2, "0")}`;

@@ -1,13 +1,21 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 
+export interface ProsodyFrame {
+  time: number;         // seconds since start
+  volume: number;       // 0-100
+  pitch: number;        // Hz
+  energy: number;       // 0-100
+  isSilent: boolean;
+}
+
 export interface ProsodyMetrics {
-  currentVolume: number;        // 0-100, real-time
-  averageVolume: number;        // 0-100, session average
-  volumeVariation: number;      // 0-100, how dynamic the volume is
-  currentPitch: number;         // Hz estimate, real-time
-  pitchVariation: number;       // 0-100, monotone vs. expressive
-  energyLevel: number;          // 0-100, overall vocal energy
-  silenceRatio: number;         // 0-100, % of time spent in silence
+  currentVolume: number;
+  averageVolume: number;
+  volumeVariation: number;
+  currentPitch: number;
+  pitchVariation: number;
+  energyLevel: number;
+  silenceRatio: number;
 }
 
 const INITIAL_METRICS: ProsodyMetrics = {
@@ -23,6 +31,7 @@ const INITIAL_METRICS: ProsodyMetrics = {
 export function useProsody() {
   const [metrics, setMetrics] = useState<ProsodyMetrics>(INITIAL_METRICS);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const timelineRef = useRef<ProsodyFrame[]>([]);
 
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -34,6 +43,8 @@ export function useProsody() {
   const pitchHistoryRef = useRef<number[]>([]);
   const silentFramesRef = useRef(0);
   const totalFramesRef = useRef(0);
+  const analysisStartRef = useRef(0);
+  const lastFrameLogRef = useRef(0);
 
   const SILENCE_THRESHOLD = 10; // Volume below this = silence
 
@@ -58,6 +69,9 @@ export function useProsody() {
       totalFramesRef.current = 0;
 
       setIsAnalyzing(true);
+      analysisStartRef.current = Date.now();
+      lastFrameLogRef.current = Date.now();
+      timelineRef.current = [];
       analyze();
     } catch (err) {
       console.error("Failed to start prosody analysis:", err);
@@ -145,6 +159,20 @@ export function useProsody() {
         silenceRatio,
       });
 
+      // Log timeline frame every 100ms (not every rAF which is 16ms)
+      const frameNow = Date.now();
+      if (frameNow - lastFrameLogRef.current >= 100) {
+        lastFrameLogRef.current = frameNow;
+        const timeSec = (frameNow - analysisStartRef.current) / 1000;
+        timelineRef.current.push({
+          time: Math.round(timeSec * 10) / 10,
+          volume,
+          pitch: Math.round(pitch),
+          energy: energyLevel,
+          isSilent: volume < SILENCE_THRESHOLD,
+        });
+      }
+
       rafRef.current = requestAnimationFrame(tick);
     };
 
@@ -163,11 +191,14 @@ export function useProsody() {
     };
   }, []);
 
+  const getTimeline = useCallback(() => [...timelineRef.current], []);
+
   return {
     metrics,
     isAnalyzing,
     startAnalysis,
     stopAnalysis,
+    getTimeline,
   };
 }
 

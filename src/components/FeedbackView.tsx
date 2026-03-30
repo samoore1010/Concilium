@@ -3,17 +3,20 @@ import { FeedbackItem } from "../data/feedbackEngine";
 import { PERSONA_LIBRARY } from "../data/personas";
 import { MiiAvatar } from "./MiiAvatar";
 import { getSessionHistory, SessionRecord } from "../data/sessionHistory";
+import { SessionPlayback, generateSessionEvents } from "./SessionPlayback";
+import { SessionRecordingData } from "./MeetingRoom";
 
 interface FeedbackViewProps {
   feedback: FeedbackItem[];
   transcript: string;
+  recordingData?: SessionRecordingData;
   onNewSession: () => void;
   onViewSession?: (session: SessionRecord) => void;
 }
 
-export function FeedbackView({ feedback, transcript, onNewSession, onViewSession }: FeedbackViewProps) {
+export function FeedbackView({ feedback, transcript, recordingData, onNewSession, onViewSession }: FeedbackViewProps) {
   const [selectedIdx, setSelectedIdx] = useState(0);
-  const [tab, setTab] = useState<"feedback" | "history">("feedback");
+  const [tab, setTab] = useState<"feedback" | "recording" | "history">("feedback");
   const [sessionHistory, setSessionHistory] = useState<SessionRecord[]>([]);
 
   const avgScore = feedback.length > 0
@@ -54,6 +57,11 @@ export function FeedbackView({ feedback, transcript, onNewSession, onViewSession
           <button onClick={() => setTab("feedback")} className={`px-3 md:px-4 py-2 md:py-3 text-xs md:text-sm font-medium border-b-2 ${tab === "feedback" ? "border-blue-400 text-white" : "border-transparent text-white/50"}`}>
             Feedback
           </button>
+          {recordingData && (
+            <button onClick={() => setTab("recording")} className={`px-3 md:px-4 py-2 md:py-3 text-xs md:text-sm font-medium border-b-2 ${tab === "recording" ? "border-purple-400 text-white" : "border-transparent text-white/50"}`}>
+              Recording
+            </button>
+          )}
           <button onClick={() => setTab("history")} className={`px-3 md:px-4 py-2 md:py-3 text-xs md:text-sm font-medium border-b-2 ${tab === "history" ? "border-blue-400 text-white" : "border-transparent text-white/50"}`}>
             History
           </button>
@@ -196,6 +204,19 @@ export function FeedbackView({ feedback, transcript, onNewSession, onViewSession
               )}
             </div>
           </>
+        )}
+
+        {tab === "recording" && recordingData && (
+          <div>
+            <h3 className="text-sm md:text-base font-medium mb-4">Session Recording & Delivery Analysis</h3>
+            <SessionPlayback
+              audioUrl={recordingData.audioUrl}
+              duration={recordingData.duration}
+              timeline={recordingData.timeline}
+              events={generateSessionEvents(recordingData.timeline, 0, recordingData.chatMessages)}
+              transcript={transcript}
+            />
+          </div>
         )}
 
         {tab === "history" && (
