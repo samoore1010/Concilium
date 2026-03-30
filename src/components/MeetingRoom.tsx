@@ -280,22 +280,27 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
 
         reactions.forEach((r) => {
           const responseText = r.question || r.comment;
+          // shouldInterrupt can come as boolean or string from LLM
+          const wantsInterrupt = r.shouldInterrupt === true || (r as any).shouldInterrupt === "true";
           const canInterrupt = behavior.allowInterruptions
-            && r.shouldInterrupt === true
+            && wantsInterrupt
             && responseText
-            && wordCountRef.current >= behavior.interruptMinWords
-            && !waitingForResponseRef.current;
-          if (canInterrupt) {
+            && wordCountRef.current >= behavior.interruptMinWords;
+
+          console.log(`[Interrupt] ${r.personaId}: shouldInterrupt=${r.shouldInterrupt}, canInterrupt=${canInterrupt}, waiting=${waitingForResponseRef.current}, words=${wordCountRef.current}, text=${responseText?.substring(0, 30)}`);
+
+          if (canInterrupt && !waitingForResponseRef.current) {
             interrupters.push(r);
-          } else {
+          } else if (responseText) {
             nonInterrupters.push(r);
           }
         });
 
         // Pick ONE interrupter — prefer different personas and higher urgency
         let chosenInterrupter: typeof reactions[0] | null = null;
+        console.log(`[Interrupt] ${interrupters.length} interrupters, ${nonInterrupters.length} non-interrupters`);
+
         if (interrupters.length > 0) {
-          // Sort by: different persona first, then by urgency
           const scored = interrupters.map((r) => {
             let score = 0;
             // Strongly prefer someone different from last speaker
@@ -333,6 +338,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
                 ...prev,
                 [r.personaId]: { ...prev[r.personaId], reaction: "raised-hand" },
               }));
+              console.log(`[Interrupt] Queued ${chosenInterrupter.personaId}, processing=${isProcessingInterruptRef.current}, waiting=${waitingForResponseRef.current}`);
               if (!isProcessingInterruptRef.current && !waitingForResponseRef.current) {
                 setTimeout(() => processNextInterrupt(), 500 + Math.random() * 1000);
               }
