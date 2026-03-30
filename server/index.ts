@@ -65,6 +65,32 @@ app.get("/api/health", (_req, res) => {
   });
 });
 
+// ElevenLabs diagnostic — test the key
+app.get("/api/tts/test-elevenlabs", async (_req, res) => {
+  const apiKey = process.env.ELEVENLABS_API_KEY;
+  if (!apiKey) return res.json({ status: "no key", keyLength: 0 });
+
+  try {
+    const keyPreview = apiKey.substring(0, 4) + "..." + apiKey.substring(apiKey.length - 4);
+
+    // Test the key by calling the user endpoint
+    const userRes = await fetch("https://api.elevenlabs.io/v1/user", {
+      headers: { "xi-api-key": apiKey },
+    });
+    const userData = userRes.ok ? await userRes.json() : await userRes.text();
+
+    res.json({
+      status: userRes.ok ? "ok" : "error",
+      httpCode: userRes.status,
+      keyPreview,
+      keyLength: apiKey.length,
+      response: userRes.ok ? { subscription: userData.subscription?.tier } : userData,
+    });
+  } catch (err: any) {
+    res.json({ status: "error", message: err.message });
+  }
+});
+
 // === TTS Endpoint (multi-provider) ===
 
 app.post("/api/tts", async (req, res) => {
@@ -117,7 +143,8 @@ async function ttsElevenLabs(text: string, personaId: string, res: any) {
 
   try {
     const voiceId = ELEVENLABS_VOICES[personaId] || "21m00Tcm4TlvDq8ikWAM";
-    console.log(`[TTS:ElevenLabs] voiceId="${voiceId}" persona="${personaId}"`);
+    const keyPreview = apiKey.substring(0, 4) + "..." + apiKey.substring(apiKey.length - 4);
+    console.log(`[TTS:ElevenLabs] voiceId="${voiceId}" persona="${personaId}" keyPreview="${keyPreview}" keyLength=${apiKey.length}`);
 
     const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
       method: "POST",
@@ -128,20 +155,19 @@ async function ttsElevenLabs(text: string, personaId: string, res: any) {
       },
       body: JSON.stringify({
         text,
-        model_id: "eleven_turbo_v2_5",
+        model_id: "eleven_multilingual_v2",
         voice_settings: {
           stability: 0.5,
           similarity_boost: 0.75,
-          style: 0.3,
-          use_speaker_boost: true,
         },
       }),
     });
 
     if (!response.ok) {
-      const errText = await response.text();
-      console.error(`[TTS:ElevenLabs] API error ${response.status}:`, errText);
-      throw new Error(`ElevenLabs API returned ${response.status}`);
+      const errBody = await response.text();
+      console.error(`[TTS:ElevenLabs] API error ${response.status}: ${errBody}`);
+
+      throw new Error(`ElevenLabs API returned ${response.status}: ${errBody}`);
     }
 
     const buffer = Buffer.from(await response.arrayBuffer());
