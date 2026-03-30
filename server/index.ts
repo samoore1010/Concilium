@@ -71,6 +71,7 @@ app.post("/api/tts", async (req, res) => {
 
   try {
     const voice = (PERSONA_VOICES[personaId] || "alloy") as "alloy" | "echo" | "fable" | "onyx" | "nova" | "shimmer";
+    console.log(`[TTS] Generating voice="${voice}" for persona="${personaId}", text="${text.substring(0, 50)}..."`);
 
     const response = await client.audio.speech.create({
       model: "tts-1",
@@ -118,10 +119,8 @@ app.post("/api/react", async (req, res) => {
     });
 
     const text = message.content[0].type === "text" ? message.content[0].text : "";
-
-    // Parse JSON from response (strip markdown fences if present)
-    const jsonStr = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-    const parsed = JSON.parse(jsonStr);
+    const parsed = safeParseJSON(text);
+    if (!parsed) throw new Error("Failed to parse JSON response");
 
     res.json(parsed);
   } catch (error: any) {
@@ -193,20 +192,28 @@ app.post("/api/feedback", async (req, res) => {
     const persona = getPersonaPrompt(personaId);
     const prompt = buildFeedbackPrompt(persona, transcript, sessionType || "business-pitch");
 
+    console.log(`[Feedback] Generating for ${personaId}...`);
+
     const message = await client.messages.create({
       model: "claude-sonnet-4-6",
-      max_tokens: 1000,
+      max_tokens: 1500,
       system: persona.systemPrompt,
       messages: [{ role: "user", content: prompt }],
     });
 
     const text = message.content[0].type === "text" ? message.content[0].text : "";
-    const jsonStr = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-    const parsed = JSON.parse(jsonStr);
+    console.log(`[Feedback] Raw response for ${personaId}: ${text.substring(0, 100)}...`);
 
+    const parsed = safeParseJSON(text);
+    if (!parsed) {
+      console.error(`[Feedback] Failed to parse JSON for ${personaId}`);
+      return res.status(500).json({ error: "Failed to parse LLM response" });
+    }
+
+    console.log(`[Feedback] Success for ${personaId}: score ${parsed.overallScore}`);
     res.json({ personaId, personaName: personaId, ...parsed });
   } catch (error: any) {
-    console.error("Feedback error:", error.message);
+    console.error(`[Feedback] Error for ${personaId}:`, error.message);
     res.status(500).json({ error: "Failed to generate feedback", detail: error.message });
   }
 });
@@ -240,8 +247,8 @@ app.post("/api/feedback-batch", async (req, res) => {
         });
 
         const text = message.content[0].type === "text" ? message.content[0].text : "";
-        const jsonStr = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-        const parsed = JSON.parse(jsonStr);
+        const parsed = safeParseJSON(text);
+        if (!parsed) throw new Error("Failed to parse JSON response");
         feedback.push({ personaId, ...parsed });
         console.log(`Feedback generated for ${personaId}: score ${parsed.overallScore}`);
       } catch (err: any) {
@@ -266,4 +273,26 @@ const PORT = parseInt(process.env.PORT || "3000", 10);
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`Server running on port ${PORT}`);
   console.log(`LLM available: ${!!process.env.ANTHROPIC_API_KEY}`);
+  console.log(`TTS available: ${!!process.env.OPENAI_API_KEY}`);
 });
+
+// Robust JSON parser that handles markdown fences and partial JSON
+function safeParseJSON(text: string): any {
+  // Strip markdown code fences
+  let cleaned = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+
+  // Try direct parse first
+  try {
+    return JSON.parse(cleaned);
+  } catch {}
+
+  // Try to extract JSON object from surrounding text
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      return JSON.parse(jsonMatch[0]);
+    } catch {}
+  }
+
+  return null;
+}
