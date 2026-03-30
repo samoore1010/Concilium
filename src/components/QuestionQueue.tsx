@@ -2,6 +2,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Persona } from "../data/personas";
 import { HandRaiseEvent } from "../data/feedbackEngine";
 import { MiiAvatar } from "./MiiAvatar";
+import { TTSProvider } from "../hooks/useTTS";
 
 export interface QueuedQuestion {
   id: string;
@@ -15,6 +16,9 @@ interface QuestionQueueProps {
   personas: Persona[];
   speakingPersonaId: string | null;
   ttsEnabled: boolean;
+  availableProviders?: string[];
+  activeProvider?: TTSProvider;
+  onProviderChange?: (p: TTSProvider) => void;
   onListen: (question: QueuedQuestion) => void;
   onRead: (question: QueuedQuestion) => void;
   onDismiss: (questionId: string) => void;
@@ -26,26 +30,59 @@ export function QuestionQueue({
   personas,
   speakingPersonaId,
   ttsEnabled,
+  availableProviders = [],
+  activeProvider = "auto",
+  onProviderChange,
   onListen,
   onRead,
   onDismiss,
   onToggleTTS,
 }: QuestionQueueProps) {
+  const providerLabels: Record<string, string> = {
+    auto: "Auto",
+    elevenlabs: "ElevenLabs",
+    openai: "OpenAI",
+    browser: "Browser",
+  };
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      {/* TTS toggle */}
-      <div className="px-3 py-2 border-b border-white/5 flex items-center justify-between">
-        <span className="text-[10px] text-white/40 uppercase tracking-wider">Voice Feedback</span>
-        <button
-          onClick={onToggleTTS}
-          className={`text-[10px] px-2 py-1 rounded transition-colors ${
-            ttsEnabled
-              ? "bg-emerald-500/20 text-emerald-300"
-              : "bg-white/5 text-white/40 hover:text-white/60"
-          }`}
+      {/* TTS controls */}
+      <div className="px-3 py-2 border-b border-white/5 space-y-1.5">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] text-white/40 uppercase tracking-wider">Voice Feedback</span>
+          <button
+            onClick={onToggleTTS}
+            className={`text-[10px] px-2 py-1 rounded transition-colors ${
+              ttsEnabled
+                ? "bg-emerald-500/20 text-emerald-300"
+                : "bg-white/5 text-white/40 hover:text-white/60"
+            }`}
         >
           {ttsEnabled ? "ON" : "OFF"}
         </button>
+        </div>
+
+        {/* Provider selector — only shows when TTS is on and multiple providers exist */}
+        {ttsEnabled && availableProviders.length > 0 && onProviderChange && (
+          <div className="flex items-center gap-1">
+            <span className="text-[9px] text-white/30 mr-1">Voice:</span>
+            {["auto", ...availableProviders, "browser"].map((p) => (
+              <button
+                key={p}
+                onClick={() => onProviderChange(p as TTSProvider)}
+                className={`text-[9px] px-1.5 py-0.5 rounded transition-colors ${
+                  activeProvider === p
+                    ? p === "elevenlabs" ? "bg-purple-500/20 text-purple-300" : "bg-blue-500/20 text-blue-300"
+                    : "bg-white/5 text-white/30 hover:text-white/50"
+                }`}
+              >
+                {providerLabels[p] || p}
+                {p === "elevenlabs" && <span className="ml-0.5 text-[7px]">PRO</span>}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Queue list */}
