@@ -263,11 +263,40 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
         sessionType,
         [...recentChat, `You: ${text}`]
       ).then((reactions) => {
-        if (sessionEndedRef.current) return; // Hard stop
+        if (sessionEndedRef.current) return;
 
-        // Pick at most ONE interrupter per batch (highest urgency)
-        let interrupterChosen = false;
+        // Separate interrupters from non-interrupters
+        const interrupters: typeof reactions = [];
+        const nonInterrupters: typeof reactions = [];
 
+        reactions.forEach((r) => {
+          const responseText = r.question || r.comment;
+          const canInterrupt = behavior.allowInterruptions
+            && r.shouldInterrupt === true
+            && responseText
+            && wordCountRef.current >= behavior.interruptMinWords
+            && !waitingForResponseRef.current;
+          if (canInterrupt) {
+            interrupters.push(r);
+          } else {
+            nonInterrupters.push(r);
+          }
+        });
+
+        // Pick ONE interrupter — prefer someone who HASN'T spoken recently
+        let chosenInterrupter: typeof reactions[0] | null = null;
+        if (interrupters.length > 0) {
+          // First try: someone different from the last interrupter
+          const different = interrupters.find((r) => r.personaId !== lastInterruptPersonaRef.current);
+          if (different && consecutiveCountRef.current >= MAX_CONSECUTIVE) {
+            chosenInterrupter = different;
+          } else {
+            // If the last persona hasn't hit the limit, or no one else wants to interrupt, use first available
+            chosenInterrupter = interrupters[0];
+          }
+        }
+
+        // Process all reactions
         reactions.forEach((r) => {
           if (sessionEndedRef.current) return;
           const persona = personas.find((p) => p.id === r.personaId);
@@ -280,14 +309,8 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
 
           const responseText = r.question || r.comment;
           if (responseText) {
-            const shouldAutoPlay = behavior.allowInterruptions
-              && r.shouldInterrupt === true
-              && wordCountRef.current >= behavior.interruptMinWords
-              && !waitingForResponseRef.current
-              && !interrupterChosen;
-
-            if (shouldAutoPlay) {
-              interrupterChosen = true;
+            if (r === chosenInterrupter) {
+              // This persona gets to interrupt
               interruptQueueRef.current.push({ personaId: r.personaId, text: responseText });
               setPersonaStates((prev) => ({
                 ...prev,
@@ -511,7 +534,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
   );
 
   return (
-    <div className="h-[100dvh] h-screen flex flex-col text-white relative overflow-hidden touch-none">
+    <div className="h-[100dvh] flex flex-col text-white relative overflow-hidden session-view">
       <ThemedBackground theme={theme} />
 
       {/* Generating feedback overlay */}
@@ -638,8 +661,8 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
               />
               <motion.div
                 key="sheet"
-                className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#0f0f23] border-t border-white/10 rounded-t-2xl flex flex-col"
-                style={{ maxHeight: "60dvh" }}
+                className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#0f0f23]/95 backdrop-blur-md border-t border-white/10 rounded-t-2xl flex flex-col"
+                style={{ maxHeight: "40dvh" }}
                 initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
                 transition={{ type: "spring", stiffness: 300, damping: 30 }}
               >
@@ -684,7 +707,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
             <ToolbarBtn icon="video" active={isCameraActive} color={theme.accentColor} onClick={() => isCameraActive ? stopCamera() : startCamera()} />
             <button
               onClick={() => setMobilePanel(mobilePanel ? null : "chat")}
-              className="md:hidden w-7 h-7 flex items-center justify-center rounded-full bg-white/5 text-white/50 relative"
+              className="md:hidden w-10 h-10 flex items-center justify-center rounded-full bg-white/5 text-white/50 relative"
             >
               <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor">
                 <path d="M2.5 2A1.5 1.5 0 001 3.5v8A1.5 1.5 0 002.5 13H4l4 3v-3h4.5a1.5 1.5 0 001.5-1.5v-8A1.5 1.5 0 0012.5 2h-10z" />
@@ -816,7 +839,7 @@ function ToolbarBtn({ icon, active, color, onClick }: { icon: string; active?: b
   return (
     <button
       onClick={onClick}
-      className={`w-8 h-8 md:w-9 md:h-9 flex items-center justify-center rounded-full transition-colors flex-shrink-0 ${active ? "text-white" : "bg-white/5 hover:bg-white/10 text-white/50"}`}
+      className={`w-10 h-10 md:w-9 md:h-9 flex items-center justify-center rounded-full transition-colors flex-shrink-0 ${active ? "text-white" : "bg-white/5 hover:bg-white/10 text-white/50"}`}
       style={active ? { backgroundColor: color } : undefined}
     >
       <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d={paths[icon]} /></svg>

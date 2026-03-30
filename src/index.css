@@ -213,6 +213,7 @@
 /* ===== Utilities ===== */
 
 .mirror { transform: scaleX(-1); }
+.scroll-touch { -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
 
 .frosted-glass {
   backdrop-filter: blur(10px);
@@ -220,6 +221,11 @@
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-/* Safe area padding for mobile */
+/* Safe areas for mobile */
 .safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
 .safe-top { padding-top: env(safe-area-inset-top, 0px); }
+
+/* Mobile session view — prevent body scroll while allowing inner scroll */
+@media (max-width: 767px) {
+  .session-view { position: fixed; inset: 0; overflow: hidden; }
+}

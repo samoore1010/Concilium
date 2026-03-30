@@ -61,11 +61,11 @@ export function AudienceTile({ persona, reaction, reactionEmoji, isActive, isMut
           ${isActive ? "ring-2 ring-blue-400" : "ring-1 ring-white/10"}
           ${getReactionGlowClass()}
           bg-gradient-to-b from-[#2a2a4a]/60 to-[#1a1a2e]/60 hover:from-[#32325a]/70 hover:to-[#22223a]/70`}
-        style={{ borderRadius: 8, minHeight: 120 }}
+        style={{ borderRadius: 8, minHeight: 80 }}
       >
         {/* Avatar */}
         <div className="animate-breathe mt-2 flex-1 flex items-end">
-          <MiiAvatar persona={persona} size={110} reaction={displayReaction} showReactionEmoji={reactionEmoji} />
+          <MiiAvatar persona={persona} size={typeof window !== "undefined" && window.innerWidth < 768 ? 70 : 110} reaction={displayReaction} showReactionEmoji={reactionEmoji} />
         </div>
 
         {/* Name bar */}
