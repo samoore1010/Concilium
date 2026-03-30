@@ -43,7 +43,7 @@ const OPENAI_VOICES: Record<string, string> = {
 
 const ELEVENLABS_VOICES: Record<string, string> = {
   "maria-chen": "21m00Tcm4TlvDq8ikWAM",      // Rachel
-  "james-wilson": "VR6AewLTigWG4xSOukaG",     // Arnold
+  "james-wilson": "fATgBRI8wg5KkDFg8vBd",     // Custom voice
   "aisha-johnson": "EXAVITQu4vr4xnSDxMaL",   // Bella
   "carlos-reyes": "ErXwobaYiN019PkySvjV",     // Antoni
   "patricia-omalley": "MF3mGyEYCl7XYWbV9V6O", // Elli
