@@ -178,18 +178,13 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
         ...prev,
         [next.personaId]: { ...prev[next.personaId], reaction: "speaking" },
       }));
-      // Pause mic before playing TTS (mobile browsers can't do both)
-      if (continuousActive) {
-        stopListening();
-        stopVAD();
-        console.log("[Interrupt] Paused mic for TTS playback");
-      }
+      console.log(`[Interrupt] Playing: ${persona.name}: "${next.text.substring(0, 40)}..."`);
       speak(next.text, next.personaId, getVoiceConfig(next.personaId));
     } else {
       isProcessingInterruptRef.current = false;
       processInterruptRef.current();
     }
-  }, [personas, elapsed, speak, continuousActive, stopListening, stopVAD]);
+  }, [personas, elapsed, speak]);
 
   // Keep ref in sync so setTimeout always calls latest version
   processInterruptRef.current = processNextInterrupt;
@@ -204,13 +199,6 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
         }));
         setSpeakingPersonaId(null);
         isProcessingInterruptRef.current = false;
-
-        // Resume mic after TTS finishes (was paused for mobile compatibility)
-        if (continuousActive && !isListening) {
-          startListening();
-          try { startVAD(); } catch {}
-          console.log("[Interrupt] Resumed mic after TTS");
-        }
 
         // After an audience member finishes speaking, wait for user response
         // before allowing the next interrupt
@@ -462,11 +450,6 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     setSpeakingPersonaId(q.personaId);
     setPersonaStates((prev) => ({ ...prev, [q.personaId]: { ...prev[q.personaId], reaction: "speaking" } }));
     if (persona) setChatMessages((prev) => [...prev, { from: persona.name, text: q.question, time: elapsed }]);
-    // Pause mic before TTS (mobile can't do both simultaneously)
-    if (continuousActive) {
-      stopListening();
-      stopVAD();
-    }
     speak(q.question, q.personaId, getVoiceConfig(q.personaId));
     setQuestionQueue((prev) => prev.filter((x) => x.id !== q.id));
   };
