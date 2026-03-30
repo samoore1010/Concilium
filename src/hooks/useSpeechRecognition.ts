@@ -7,6 +7,8 @@ interface UseSpeechRecognitionReturn {
   startListening: () => void;
   stopListening: () => void;
   supported: boolean;
+  // For continuous mode: get only the NEW text since last consume
+  consumeNewText: () => string;
 }
 
 export function useSpeechRecognition(): UseSpeechRecognitionReturn {
@@ -16,7 +18,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
   const [supported, setSupported] = useState(true);
   const recognitionRef = useRef<any>(null);
   const finalTranscriptRef = useRef("");
-  // Track whether the user intentionally wants listening on
+  const lastConsumedIndexRef = useRef(0);
   const wantsListeningRef = useRef(false);
 
   useEffect(() => {
@@ -30,9 +32,7 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     recognition.continuous = true;
     recognition.interimResults = true;
 
-    recognition.onstart = () => {
-      setIsListening(true);
-    };
+    recognition.onstart = () => setIsListening(true);
 
     recognition.onresult = (event: any) => {
       let interim = "";
@@ -49,11 +49,9 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     };
 
     recognition.onerror = (event: any) => {
-      // "aborted" is expected when we call stop()
       if (event.error !== "aborted") {
         console.error("Speech recognition error", event.error);
       }
-      // "no-speech" is a timeout — not a reason to stop if user wants listening
       if (event.error === "not-allowed" || event.error === "service-not-allowed") {
         wantsListeningRef.current = false;
         setIsListening(false);
@@ -61,58 +59,40 @@ export function useSpeechRecognition(): UseSpeechRecognitionReturn {
     };
 
     recognition.onend = () => {
-      // Auto-restart if the user hasn't explicitly stopped
-      // Browser speech recognition times out after silence — this keeps it alive
       if (wantsListeningRef.current) {
-        try {
-          recognition.start();
-        } catch {
-          // Already started or other issue — ignore
-          setIsListening(false);
-          wantsListeningRef.current = false;
-        }
+        try { recognition.start(); } catch { setIsListening(false); wantsListeningRef.current = false; }
       } else {
         setIsListening(false);
       }
     };
 
     recognitionRef.current = recognition;
-
-    return () => {
-      wantsListeningRef.current = false;
-      if (recognitionRef.current) {
-        recognitionRef.current.abort();
-      }
-    };
+    return () => { wantsListeningRef.current = false; recognitionRef.current?.abort(); };
   }, []);
 
   const startListening = useCallback(() => {
     if (recognitionRef.current && supported) {
       finalTranscriptRef.current = "";
+      lastConsumedIndexRef.current = 0;
       setTranscript("");
       setInterimTranscript("");
       wantsListeningRef.current = true;
-      try {
-        recognitionRef.current.start();
-      } catch {
-        // May already be started
-      }
+      try { recognitionRef.current.start(); } catch {}
     }
   }, [supported]);
 
   const stopListening = useCallback(() => {
     wantsListeningRef.current = false;
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
-    }
+    recognitionRef.current?.stop();
   }, []);
 
-  return {
-    transcript,
-    interimTranscript,
-    isListening,
-    startListening,
-    stopListening,
-    supported,
-  };
+  // Returns only the text that hasn't been consumed yet, then marks it as consumed
+  const consumeNewText = useCallback((): string => {
+    const full = finalTranscriptRef.current;
+    const newText = full.substring(lastConsumedIndexRef.current).trim();
+    lastConsumedIndexRef.current = full.length;
+    return newText;
+  }, []);
+
+  return { transcript, interimTranscript, isListening, startListening, stopListening, supported, consumeNewText };
 }
