@@ -103,10 +103,25 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
         // Create an inline AudioWorklet processor
         const workletCode = `
           class PCMProcessor extends AudioWorkletProcessor {
+            constructor() {
+              super();
+              this.buffer = new Float32Array(0);
+              this.bufferSize = 4800; // ~100ms at 48kHz, will be downsampled to ~1600 at 16kHz
+            }
             process(inputs) {
               const input = inputs[0];
               if (input.length > 0 && input[0].length > 0) {
-                this.port.postMessage(input[0]);
+                // Append to buffer
+                const newBuf = new Float32Array(this.buffer.length + input[0].length);
+                newBuf.set(this.buffer);
+                newBuf.set(input[0], this.buffer.length);
+                this.buffer = newBuf;
+
+                // Send when buffer is full (~100ms of audio)
+                if (this.buffer.length >= this.bufferSize) {
+                  this.port.postMessage(this.buffer);
+                  this.buffer = new Float32Array(0);
+                }
               }
               return true;
             }
