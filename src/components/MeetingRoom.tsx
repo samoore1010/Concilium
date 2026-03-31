@@ -80,15 +80,38 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
   const behavior = getSessionBehavior(sessionType);
 
   const { isActive: isCameraActive, startCamera, stopCamera, attachVideo } = useCamera();
-  // Speech recognition — prefer ElevenLabs STT (real-time WebSocket) over Web Speech API
+  // Speech recognition — try ElevenLabs STT first, fall back to Web Speech API
   const webSpeech = useSpeechRecognition();
   const elSTT = useElevenLabsSTT();
-  const useElSTT = elSTT.supported;
+  const [sttProvider, setSttProvider] = useState<"web" | "elevenlabs">("web");
 
+  // Auto-detect: if ElevenLabs STT is available, prefer it
+  useEffect(() => {
+    if (elSTT.supported) setSttProvider("elevenlabs");
+  }, [elSTT.supported]);
+
+  const useElSTT = sttProvider === "elevenlabs" && elSTT.supported;
   const speechTranscript = useElSTT ? elSTT.transcript : webSpeech.transcript;
   const interimTranscript = useElSTT ? elSTT.interimTranscript : webSpeech.interimTranscript;
   const isListening = useElSTT ? elSTT.isListening : webSpeech.isListening;
-  const startListening = useElSTT ? elSTT.startListening : webSpeech.startListening;
+
+  // Wrapped startListening with fallback
+  const startListening = useCallback(async () => {
+    if (useElSTT) {
+      try {
+        await elSTT.startListening();
+        console.log("[STT] Using ElevenLabs real-time");
+      } catch (err) {
+        console.log("[STT] ElevenLabs failed, falling back to Web Speech API:", err);
+        setSttProvider("web");
+        webSpeech.startListening();
+      }
+    } else {
+      webSpeech.startListening();
+      console.log("[STT] Using Web Speech API");
+    }
+  }, [useElSTT, elSTT, webSpeech]);
+
   const stopListening = useElSTT ? elSTT.stopListening : webSpeech.stopListening;
   const consumeNewText = useElSTT ? elSTT.consumeNewText : webSpeech.consumeNewText;
   const { metrics: speechMetrics, updateMetrics } = useSpeechMetrics();
@@ -492,7 +515,9 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     interruptQueueRef.current = [];
     isProcessingInterruptRef.current = false;
     waitingForResponseRef.current = false;
-    stopCamera(); stopListening(); stopTTS(); stopProsody(); stopVAD(); stopRecording();
+    stopCamera(); stopListening(); stopTTS(); stopProsody(); stopVAD();
+    // Await recording stop to ensure all audio data is flushed
+    const recordingResult = await stopRecording();
     setContinuousActive(false);
     const ft = transcript.join(" ");
 
@@ -550,12 +575,11 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
       feedback,
       transcript: ft,
     });
-    // Collect recording data
-    const recording = getRecording();
+    // Collect recording data (use awaited result, not getRecording)
     const timeline = getTimeline();
-    const recordingData: SessionRecordingData | undefined = recording.url ? {
-      audioUrl: recording.url,
-      duration: recording.duration,
+    const recordingData: SessionRecordingData | undefined = recordingResult.url ? {
+      audioUrl: recordingResult.url,
+      duration: recordingResult.duration,
       timeline,
       chatMessages: [...chatMessages],
     } : undefined;
@@ -792,7 +816,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
             <div className="max-w-3xl mx-auto flex gap-1.5 md:gap-2 items-center">
               <ToolbarBtn icon="mic" active={isListening} color={theme.accentColor} onClick={() => {
                 if (isListening) { stopListening(); stopProsody(); }
-                else { startListening(); startProsody(); }
+                else { startListening().catch(() => {}); startProsody(); }
               }} />
               <ToolbarBtn icon="video" active={isCameraActive} color={theme.accentColor} onClick={() => isCameraActive ? stopCamera() : startCamera()} />
               <button

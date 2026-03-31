@@ -213,8 +213,11 @@ export function FeedbackView({ feedback, transcript, recordingData, onNewSession
               audioUrl={recordingData.audioUrl}
               duration={recordingData.duration}
               timeline={recordingData.timeline}
-              events={generateSessionEvents(recordingData.timeline, 0, recordingData.chatMessages)}
+              events={generateSessionEvents(recordingData.timeline, latestSession?.speechMetrics?.fillerWordCount || 0, recordingData.chatMessages)}
               transcript={transcript}
+              wpm={latestSession?.speechMetrics?.wordsPerMinute || 0}
+              fillerCount={latestSession?.speechMetrics?.fillerWordCount || 0}
+              sessionType={latestSession?.sessionType || "business-pitch"}
             />
           </div>
         )}
