@@ -128,24 +128,24 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     checkLLMAvailability().then(setLlmAvailable);
   }, []);
 
-  // Continuous mode: two auto-send mechanisms
-  // 1. Primary: send immediately when ElevenLabs commits transcript (natural phrase boundary)
-  // 2. Secondary: VAD silence detection triggers send for any remaining buffered text
+  // Continuous mode: auto-send committed transcripts to chat
+  // Uses a polling interval to avoid React effect timing issues
   const lastSentTranscriptRef = useRef("");
 
-  // Primary: auto-send on each committed transcript from ElevenLabs
   useEffect(() => {
-    if (!continuousActive || !speechTranscript) return;
-    if (speechTranscript.length <= lastSentTranscriptRef.current.length) return;
+    if (!continuousActive) return;
 
-    lastSentTranscriptRef.current = speechTranscript;
-    const newText = consumeNewText();
-    if (newText.length > 0) {
+    const interval = setInterval(() => {
       if (sessionEndedRef.current) return;
-      if (waitingForResponseRef.current) waitingForResponseRef.current = false;
-      processUserInputRef.current(newText);
-    }
-  }, [continuousActive, speechTranscript, consumeNewText]);
+      const newText = consumeNewText();
+      if (newText.length > 0) {
+        if (waitingForResponseRef.current) waitingForResponseRef.current = false;
+        processUserInputRef.current(newText);
+      }
+    }, 800); // Check every 800ms for new committed text
+
+    return () => clearInterval(interval);
+  }, [continuousActive, consumeNewText]);
 
   // Secondary: VAD silence detection sends any remaining unconsumed text
   useEffect(() => {
@@ -164,8 +164,12 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     setContinuousActive(true);
     lastSentTranscriptRef.current = "";
 
-    // Open mic once and share across VAD, prosody, and recorder
-    // (ElevenLabs STT opens its own stream for its AudioWorklet pipeline)
+    // IMPORTANT: Start ElevenLabs STT FIRST — it opens its own mic stream and
+    // AudioWorklet pipeline. Opening other mic streams before it can interfere.
+    await startListening();
+
+    // Now open a shared stream for the secondary hooks (VAD, prosody, recorder).
+    // ElevenLabs already has its own mic stream running at this point.
     let sharedStream: MediaStream | null = null;
     try {
       sharedStream = await navigator.mediaDevices.getUserMedia({
@@ -173,10 +177,9 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
       });
       sharedStreamRef.current = sharedStream;
     } catch (e) {
-      console.log("[Continuous] Mic access denied, continuing without shared stream");
+      console.log("[Continuous] Shared stream unavailable, hooks will open their own");
     }
 
-    startListening();
     try { await startVAD(sharedStream || undefined); } catch (e) { console.log("[Continuous] VAD unavailable"); }
     try { await startProsody(sharedStream || undefined); } catch (e) { console.log("[Continuous] Prosody unavailable"); }
     try { await startRecording(sharedStream || undefined); } catch (e) { console.log("[Continuous] Recording unavailable"); }
