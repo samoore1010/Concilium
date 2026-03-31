@@ -25,21 +25,33 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
   const chunksSentRef = useRef(0);
   const activeRef = useRef(false);
 
+  const startingRef = useRef(false);
+
   // Pre-buffer audio chunks before WS is open so the first message arrives immediately
   const pendingChunksRef = useRef<string[]>([]);
 
+  const cleanup = useCallback(() => {
+    if (workletRef.current) { try { workletRef.current.disconnect(); } catch {} workletRef.current = null; }
+    if (contextRef.current) { contextRef.current.close().catch(() => {}); contextRef.current = null; }
+    if (streamRef.current) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null; }
+    pendingChunksRef.current = [];
+  }, []);
+
   useEffect(() => {
-    fetch("/api/elevenlabs-stt-token")
+    fetch("/api/scribe-token")
       .then((r) => r.json())
       .then((d) => { setSupported(d.available === true); if (d.available) console.log("[EL-STT] Available"); })
       .catch(() => setSupported(false));
   }, []);
 
   const startListening = useCallback(async () => {
-    if (activeRef.current) return;
+    if (activeRef.current || startingRef.current) return;
+    startingRef.current = true;
     activeRef.current = true;
     pendingChunksRef.current = [];
     chunksSentRef.current = 0;
+
+    try {
 
     // --- Step 1: Get microphone access ---
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -176,21 +188,27 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
         console.error("[EL-STT] ScriptProcessor also failed:", spErr);
         cleanup();
         activeRef.current = false;
+        startingRef.current = false;
         return;
       }
     }
 
     // --- Step 3: Audio pipeline is running and buffering — NOW open WebSocket ---
     console.log("[EL-STT] Pipeline ready, opening WebSocket...");
-    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${wsProtocol}//${window.location.host}/ws/stt`;
+    const tokenRes = await fetch("/api/scribe-token");
+    if (!tokenRes.ok) throw new Error(`Failed to fetch scribe token (${tokenRes.status})`);
+    const tokenData = await tokenRes.json();
+    if (!tokenData?.token) throw new Error("Missing scribe token");
+
+    const wsUrl = `wss://api.elevenlabs.io/v1/speech-to-text/realtime?model_id=scribe_v2_realtime&token=${encodeURIComponent(tokenData.token)}`;
 
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {
-      console.log(`[EL-STT] WS open — flushing ${pendingChunksRef.current.length} buffered chunks`);
+      console.log(`[EL-STT] ElevenLabs WS open — flushing ${pendingChunksRef.current.length} buffered chunks`);
       setIsListening(true);
+      startingRef.current = false;
 
       // Flush all pre-buffered audio immediately
       const pending = pendingChunksRef.current.splice(0);
@@ -224,8 +242,10 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
           console.log("[EL-STT] Session active");
         } else if (msgType === "error" || msgType === "invalid_request") {
           console.error("[EL-STT] Server:", JSON.stringify(msg));
+        } else if (msgType === "session_ended") {
+          console.log("[EL-STT] Session ended", msg);
         } else {
-          console.log(`[EL-STT] ${msgType}`);
+          console.log(`[EL-STT] ${msgType || "unknown"}`, msg);
         }
       } catch {}
     };
@@ -235,19 +255,21 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
       console.log(`[EL-STT] Closed: code=${event.code} chunks=${chunksSentRef.current}`);
       setIsListening(false);
       activeRef.current = false;
+      startingRef.current = false;
       cleanup();
     };
-  }, []);
-
-  const cleanup = useCallback(() => {
-    if (workletRef.current) { try { workletRef.current.disconnect(); } catch {} workletRef.current = null; }
-    if (contextRef.current) { contextRef.current.close().catch(() => {}); contextRef.current = null; }
-    if (streamRef.current) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null; }
-    pendingChunksRef.current = [];
-  }, []);
+    } catch (err) {
+      console.error("[EL-STT] startListening failed", err);
+      activeRef.current = false;
+      startingRef.current = false;
+      cleanup();
+      throw err;
+    }
+  }, [cleanup]);
 
   const stopListening = useCallback(() => {
     activeRef.current = false;
+    startingRef.current = false;
     if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.close();
     wsRef.current = null;
     cleanup();
@@ -262,7 +284,7 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
   }, []);
 
   useEffect(() => {
-    return () => { activeRef.current = false; if (wsRef.current) wsRef.current.close(); cleanup(); };
+    return () => { activeRef.current = false; startingRef.current = false; if (wsRef.current) wsRef.current.close(); cleanup(); };
   }, [cleanup]);
 
   return { transcript, interimTranscript, isListening, startListening, stopListening, consumeNewText, supported };
