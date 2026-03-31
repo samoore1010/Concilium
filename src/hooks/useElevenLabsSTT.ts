@@ -18,30 +18,30 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
 
   const wsRef = useRef<WebSocket | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const processorRef = useRef<ScriptProcessorNode | null>(null);
   const contextRef = useRef<AudioContext | null>(null);
+  const workletRef = useRef<AudioWorkletNode | MediaStreamAudioSourceNode | null>(null);
+  const captureIntervalRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
+  const analyserRef = useRef<AnalyserNode | null>(null);
   const finalTranscriptRef = useRef("");
   const lastConsumedRef = useRef(0);
-  const audioChunksSent = useRef(0);
+  const chunksSentRef = useRef(0);
+  const activeRef = useRef(false);
 
   useEffect(() => {
     fetch("/api/elevenlabs-stt-token")
       .then((r) => r.json())
-      .then((data) => {
-        setSupported(data.available === true);
-        if (data.available) console.log("[EL-STT] Available");
-      })
+      .then((d) => { setSupported(d.available === true); if (d.available) console.log("[EL-STT] Available"); })
       .catch(() => setSupported(false));
   }, []);
 
   const startListening = useCallback(async () => {
-    if (isListening) return;
+    if (activeRef.current) return;
+    activeRef.current = true;
 
     const tokenRes = await fetch("/api/elevenlabs-stt-token");
     const tokenData = await tokenRes.json();
-    if (!tokenData.token) throw new Error("No token available");
+    if (!tokenData.token) throw new Error("No token");
 
-    // Get mic — let browser choose native sample rate
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
     });
@@ -49,71 +49,68 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
 
     const token = encodeURIComponent(tokenData.token);
     const wsUrl = `wss://api.elevenlabs.io/v1/speech-to-text/realtime?token=${token}&model_id=scribe_v2_realtime&language_code=en&audio_format=pcm_16000&commit_strategy=vad&vad_silence_threshold_ms=1500`;
-    console.log("[EL-STT] Connecting...");
 
+    console.log("[EL-STT] Connecting...");
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {
       console.log("[EL-STT] Connected");
       setIsListening(true);
-      audioChunksSent.current = 0;
+      chunksSentRef.current = 0;
 
-      // Create AudioContext at native sample rate, then downsample to 16kHz
-      const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      if (audioContext.state === "suspended") audioContext.resume();
-      contextRef.current = audioContext;
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      if (ctx.state === "suspended") ctx.resume();
+      contextRef.current = ctx;
 
-      const nativeSampleRate = audioContext.sampleRate;
-      console.log(`[EL-STT] Native sample rate: ${nativeSampleRate}Hz`);
+      const nativeRate = ctx.sampleRate;
+      console.log(`[EL-STT] Sample rate: ${nativeRate}Hz`);
 
-      const source = audioContext.createMediaStreamSource(stream);
-      const processor = audioContext.createScriptProcessor(4096, 1, 1);
-      processorRef.current = processor;
+      const source = ctx.createMediaStreamSource(stream);
 
-      processor.onaudioprocess = (e) => {
-        if (ws.readyState !== WebSocket.OPEN) return;
+      // Use AnalyserNode + interval to capture audio (more reliable than ScriptProcessorNode)
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 2048;
+      source.connect(analyser);
+      analyserRef.current = analyser;
 
-        const inputData = e.inputBuffer.getChannelData(0);
+      // Also connect to a silent destination to keep the graph alive
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      source.connect(gain);
+      gain.connect(ctx.destination);
 
-        // Downsample to 16kHz if needed
-        const targetRate = 16000;
-        let samples: Float32Array;
-        if (nativeSampleRate !== targetRate) {
-          const ratio = nativeSampleRate / targetRate;
-          const newLength = Math.floor(inputData.length / ratio);
-          samples = new Float32Array(newLength);
-          for (let i = 0; i < newLength; i++) {
-            samples[i] = inputData[Math.floor(i * ratio)];
-          }
-        } else {
-          samples = inputData;
+      // Capture audio at ~62.5 fps (every 16ms) using a timer
+      const captureSize = Math.floor(nativeRate * 0.064); // ~64ms of audio per chunk
+      const downsampleRatio = nativeRate / 16000;
+
+      captureIntervalRef.current = setInterval(() => {
+        if (!activeRef.current || ws.readyState !== WebSocket.OPEN) return;
+
+        // Get time-domain data from analyser
+        const floatData = new Float32Array(analyser.fftSize);
+        analyser.getFloatTimeDomainData(floatData);
+
+        // Downsample to 16kHz
+        const targetLength = Math.floor(floatData.length / downsampleRatio);
+        const pcm16 = new Int16Array(targetLength);
+        for (let i = 0; i < targetLength; i++) {
+          const sample = floatData[Math.floor(i * downsampleRatio)];
+          pcm16[i] = Math.max(-32768, Math.min(32767, Math.round(sample * 32767)));
         }
 
-        // Convert float32 to int16 PCM
-        const pcm16 = new Int16Array(samples.length);
-        for (let i = 0; i < samples.length; i++) {
-          pcm16[i] = Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32767)));
-        }
-
-        // Convert to base64 safely (avoid stack overflow from spread operator)
+        // Encode to base64 safely
         const bytes = new Uint8Array(pcm16.buffer);
         let binary = "";
-        for (let i = 0; i < bytes.length; i++) {
-          binary += String.fromCharCode(bytes[i]);
+        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+
+        ws.send(JSON.stringify({ type: "input_audio_chunk", data: btoa(binary) }));
+        chunksSentRef.current++;
+
+        if (chunksSentRef.current % 50 === 0) {
+          console.log(`[EL-STT] Sent ${chunksSentRef.current} chunks`);
         }
-        const base64 = btoa(binary);
-
-        ws.send(JSON.stringify({ type: "input_audio_chunk", data: base64 }));
-        audioChunksSent.current++;
-
-        if (audioChunksSent.current % 20 === 0) {
-          console.log(`[EL-STT] Sent ${audioChunksSent.current} chunks`);
-        }
-      };
-
-      source.connect(processor);
-      processor.connect(audioContext.destination);
+      }, 64); // ~15 chunks per second
     };
 
     ws.onmessage = (event) => {
@@ -127,40 +124,36 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
             finalTranscriptRef.current += text + " ";
             setTranscript(finalTranscriptRef.current);
             setInterimTranscript("");
-            console.log(`[EL-STT] Committed: "${text.trim().substring(0, 50)}"`);
+            console.log(`[EL-STT] Committed: "${text.trim().substring(0, 60)}"`);
           }
         } else if (msg.type === "session_started") {
-          console.log("[EL-STT] Session started by server");
+          console.log("[EL-STT] Session active");
         } else if (msg.type === "error") {
-          console.error("[EL-STT] Server error:", msg.message || msg);
+          console.error("[EL-STT] Error:", msg.message || msg);
         }
       } catch {}
     };
 
-    ws.onerror = (err) => {
-      console.error("[EL-STT] Error:", err);
-    };
+    ws.onerror = () => console.error("[EL-STT] WebSocket error");
 
     ws.onclose = (event) => {
-      console.log(`[EL-STT] Closed: code=${event.code} reason="${event.reason}" chunks_sent=${audioChunksSent.current}`);
+      console.log(`[EL-STT] Closed: code=${event.code} chunks=${chunksSentRef.current}`);
       setIsListening(false);
+      activeRef.current = false;
       cleanup();
-      if (event.code === 1008 || event.code === 4001 || event.code === 4003) {
-        console.error("[EL-STT] Auth failed");
-      }
     };
-  }, [isListening]);
+  }, []);
 
   const cleanup = useCallback(() => {
-    if (processorRef.current) { processorRef.current.disconnect(); processorRef.current = null; }
+    if (captureIntervalRef.current) { clearInterval(captureIntervalRef.current); captureIntervalRef.current = undefined; }
     if (contextRef.current) { contextRef.current.close().catch(() => {}); contextRef.current = null; }
     if (streamRef.current) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null; }
+    analyserRef.current = null;
   }, []);
 
   const stopListening = useCallback(() => {
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.close();
-    }
+    activeRef.current = false;
+    if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.close();
     wsRef.current = null;
     cleanup();
     setIsListening(false);
@@ -174,10 +167,7 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
   }, []);
 
   useEffect(() => {
-    return () => {
-      if (wsRef.current) wsRef.current.close();
-      cleanup();
-    };
+    return () => { activeRef.current = false; if (wsRef.current) wsRef.current.close(); cleanup(); };
   }, [cleanup]);
 
   return { transcript, interimTranscript, isListening, startListening, stopListening, consumeNewText, supported };
