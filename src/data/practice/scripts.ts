@@ -59,6 +59,23 @@ export const SCRIPT_LIBRARY: Script[] = [
     text: "Our study examined twelve hundred participants over a period of thirty-six months. The results were significant and, frankly, surprising. Participants who engaged in deliberate public speaking practice for just fifteen minutes per day showed a forty-seven percent improvement in perceived confidence, a thirty-one percent reduction in filler word usage, and a twenty-eight percent increase in audience engagement scores. These improvements persisted even six months after the practice period ended. What this tells us is that public speaking is not a talent. It is a trainable skill, and the returns on practice are both measurable and lasting.",
   },
 
+  // === INTERMEDIATE (continued) ===
+  {
+    id: "i5", title: "The Opening Hook", domain: "business", difficulty: "intermediate", durationSeconds: 35, targetWPM: 125,
+    focusTags: ["hooks", "energy", "engagement"],
+    text: "What if I told you that the device in your pocket is making you worse at the one thing it was designed to help with — communication? We checked our phones an average of one hundred and fifty times a day. Yet studies show that our ability to hold a meaningful face-to-face conversation has declined by thirty percent in the last decade. Today, I'm going to show you how we're reversing that trend, one conversation at a time.",
+  },
+  {
+    id: "i6", title: "Handling the Tough Question", domain: "business", difficulty: "intermediate", durationSeconds: 40, targetWPM: 120,
+    focusTags: ["composure", "clarity", "objections"],
+    text: "That's a great question, and I want to address it directly. You're right that our competitor launched six months before we did. But here's what that comparison misses. They built for enterprise. We built for the people who actually use the product every day. Our retention rate is eighty-nine percent after twelve months. Theirs is forty-one percent. Speed to market matters, but speed to value matters more. We didn't need to be first. We needed to be right. And the numbers show that we are.",
+  },
+  {
+    id: "i7", title: "Storytelling Bridge", domain: "general", difficulty: "intermediate", durationSeconds: 35, targetWPM: 120,
+    focusTags: ["storytelling", "emotion", "pauses"],
+    text: "Let me tell you about Sarah. Sarah is a nurse in rural Montana. Every week, she drives ninety minutes each way to the nearest hospital for shifts. Last winter, during a blizzard, she couldn't make the drive. A patient went without care for sixteen hours. Sarah called us the next day. She said, 'I don't need a better car. I need a better system.' That phone call is why we built what we built. Every feature in our platform exists because of someone like Sarah.",
+  },
+
   // === ADVANCED ===
   {
     id: "a1", title: "Crisis Communication", domain: "business", difficulty: "advanced", durationSeconds: 60, targetWPM: 120,
@@ -74,6 +91,21 @@ export const SCRIPT_LIBRARY: Script[] = [
     id: "a3", title: "Visionary Pitch", domain: "business", difficulty: "advanced", durationSeconds: 55, targetWPM: 130,
     focusTags: ["energy", "persuasion", "pace", "expression"],
     text: "Imagine a world where every student, regardless of where they were born, has access to the same quality of education as a student at Harvard or MIT. Not in ten years. Not in five years. Right now. That's not a fantasy. That's what we're building. Our platform uses AI to create personalized learning experiences that adapt in real time to each student's pace, style, and goals. We've tested this with fifty thousand students across twelve countries. The results are staggering. Students using our platform perform thirty-eight percent better on standardized tests and, more importantly, report twice the engagement with their coursework. They're not just learning more. They're loving learning more. We need forty million dollars to reach ten million students by the end of next year. Every week we wait, another generation of brilliant minds goes underserved. The technology exists. The demand is proven. The only question is whether we move fast enough.",
+  },
+  {
+    id: "a4", title: "Objection Reframe", domain: "business", difficulty: "advanced", durationSeconds: 50, targetWPM: 120,
+    focusTags: ["objections", "composure", "persuasion", "authority"],
+    text: "I appreciate the skepticism — it means you're taking this seriously. Let me reframe the concern. You're worried about switching costs. That's rational. But consider the cost of not switching. Your current system loses an average of four hours per employee per week to manual workarounds. That's two hundred hours per employee per year. Multiply that by your workforce and you're looking at twelve million dollars in lost productivity annually. Our migration takes six weeks. The ROI turns positive in month three. I'm not asking you to take a risk. I'm asking you to stop absorbing a loss. The data supports this. Your own team's audit supports this. The only risk here is waiting another quarter.",
+  },
+  {
+    id: "a5", title: "The Strong Close", domain: "business", difficulty: "advanced", durationSeconds: 45, targetWPM: 125,
+    focusTags: ["closing", "energy", "conviction", "call-to-action"],
+    text: "So here's where we stand. The problem is real. The solution works. The market is ready. And we have the team to execute. But none of that matters if we don't act now. Every month we delay, three more competitors enter the space. Every quarter we hesitate, another fifty thousand potential users choose an inferior alternative. I'm not asking you to believe in a vision. I'm asking you to look at the evidence and make a decision. We need fifteen million dollars to own this market within eighteen months. The window is open. Let's walk through it together.",
+  },
+  {
+    id: "a6", title: "Technical Explainer", domain: "academic", difficulty: "advanced", durationSeconds: 50, targetWPM: 115,
+    focusTags: ["clarity", "pace", "authority", "simplification"],
+    text: "I know this sounds complex, so let me break it down. Think of our system like a postal service. Traditional databases are like sending a letter — you write it, mail it, and hope it arrives. Our distributed architecture is like having a copy machine at every post office. Every piece of data exists in three places simultaneously. If one post office burns down, the other two still have your letter. That's resilience. But here's the breakthrough. We figured out how to keep all three copies perfectly synchronized in under two milliseconds. That's faster than a hummingbird's wingbeat. For your users, that means zero downtime. For your engineers, that means they can sleep at night.",
   },
 ];
 
