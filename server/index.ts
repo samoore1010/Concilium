@@ -119,24 +119,34 @@ app.get("/api/elevenlabs-stt-token", async (_req, res) => {
   if (!apiKey) return res.json({ available: false });
 
   try {
-    // Request a short-lived signed URL from ElevenLabs
-    const response = await fetch("https://api.elevenlabs.io/v1/speech-to-text/get-websocket-token", {
-      method: "GET",
-      headers: { "xi-api-key": apiKey },
-    });
+    // Try to get a signed URL / short-lived token for WebSocket auth
+    // ElevenLabs has different token endpoints depending on version
+    const endpoints = [
+      "https://api.elevenlabs.io/v1/speech-to-text/get-websocket-token",
+      "https://api.elevenlabs.io/v1/models/scribe_v2_realtime/get-signed-url",
+    ];
 
-    if (response.ok) {
-      const data = await response.json();
-      console.log("[STT Token] Got signed token");
-      res.json({ available: true, token: data.token || data.signed_url });
-    } else {
-      // If signed URL endpoint doesn't exist, pass API key (but only to authenticated sessions)
-      console.log("[STT Token] Signed URL not available, using API key");
-      res.json({ available: true, token: apiKey });
+    for (const url of endpoints) {
+      try {
+        const response = await fetch(url, { method: "GET", headers: { "xi-api-key": apiKey } });
+        if (response.ok) {
+          const data = await response.json();
+          const signedToken = data.token || data.signed_url || data.url;
+          if (signedToken) {
+            console.log(`[STT Token] Got signed token from ${url}`);
+            res.json({ available: true, token: signedToken, type: "signed" });
+            return;
+          }
+        }
+      } catch {}
     }
+
+    // Fall back to passing the API key directly
+    console.log("[STT Token] No signed token endpoint available, using API key");
+    res.json({ available: true, token: apiKey, type: "api_key" });
   } catch (err: any) {
     console.error("[STT Token] Error:", err.message);
-    res.json({ available: true, token: apiKey });
+    res.json({ available: true, token: apiKey, type: "api_key" });
   }
 });
 
