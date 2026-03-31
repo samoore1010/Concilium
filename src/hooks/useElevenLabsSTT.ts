@@ -200,7 +200,7 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
     const tokenData = await tokenRes.json();
     if (!tokenData?.token) throw new Error("Missing scribe token");
 
-    const wsUrl = `wss://api.elevenlabs.io/v1/speech-to-text/realtime?model_id=scribe_v2_realtime&token=${encodeURIComponent(tokenData.token)}`;
+    const wsUrl = `wss://api.elevenlabs.io/v1/speech-to-text/realtime?model_id=scribe_v2_realtime&language_code=en&token=${encodeURIComponent(tokenData.token)}`;
 
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
