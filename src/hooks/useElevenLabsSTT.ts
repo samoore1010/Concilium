@@ -47,12 +47,10 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
     });
     streamRef.current = stream;
 
-    const token = encodeURIComponent(tokenData.token);
-    const tokenType = tokenData.type || "api_key";
-    // Use 'token' param for signed tokens, 'xi-api-key' for raw API key
-    const authParam = tokenType === "signed" ? `token=${token}` : `xi-api-key=${token}`;
-    const wsUrl = `wss://api.elevenlabs.io/v1/speech-to-text/realtime?${authParam}&model_id=scribe_v2_realtime&language_code=en&audio_format=pcm_16000&commit_strategy=vad&vad_silence_threshold_ms=1500`;
-    console.log(`[EL-STT] Auth: ${tokenType}, connecting...`);
+    // Connect through our server's WebSocket proxy (server can set xi-api-key header)
+    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${wsProtocol}//${window.location.host}/ws/stt`;
+    console.log(`[EL-STT] Connecting via proxy...`);
 
     console.log("[EL-STT] Connecting...");
     const ws = new WebSocket(wsUrl);
