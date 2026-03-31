@@ -128,67 +128,110 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     checkLLMAvailability().then(setLlmAvailable);
   }, []);
 
-  // Refs for polling access (avoids stale closures in setInterval)
+  // Refs for interval access (avoids stale closures in setInterval)
   const interimRef = useRef("");
   const speechTranscriptRef = useRef("");
   interimRef.current = interimTranscript;
   speechTranscriptRef.current = speechTranscript;
 
-  // Auto-send transcribed text to chat during continuous (Go Live) mode.
-  // Single polling interval handles both committed and interim text:
-  //  - Committed text (from consumeNewText): sent immediately on next poll
-  //  - Interim-only text (ElevenLabs partials): sent after 1.5s of stability
-  //    (covers the case where ElevenLabs sends partials but rarely commits)
+  // ── Single-publisher auto-send for Go Live mode ──
+  // One interval, one publish path, no competing triggers.
+  //
+  // Strategy:
+  //  - Collect committed chunks into a buffer (coalescing window: 300ms)
+  //  - After 300ms of no new commits, flush buffer as ONE chat message
+  //  - Fallback: if only interim text and stable for 1.5s, send that instead
+  //  - Dedupe: skip if normalized text matches last sent message
+  const lastPublishedRef = useRef("");       // dedup: last text sent to chat
+  const coalesceBufferRef = useRef("");      // accumulates committed chunks
+  const lastCommitTimeRef = useRef(0);       // when last committed chunk arrived
+  const lastInterimSnapshotRef = useRef(""); // tracks interim changes
+  const interimStableSinceRef = useRef(0);   // when interim stopped changing
+  const totalCharsSentRef = useRef(0);       // tracks position in full transcript
+
+  const flushToChat = useCallback((text: string, source: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || sessionEndedRef.current) return;
+
+    // Dedupe: skip if identical to last published message
+    const normalized = trimmed.toLowerCase().replace(/\s+/g, " ");
+    if (normalized === lastPublishedRef.current) {
+      console.log(`[AutoSend] Dedup skip (${source}): "${trimmed.substring(0, 40)}"`);
+      return;
+    }
+    lastPublishedRef.current = normalized;
+
+    console.log(`[AutoSend] ${source} → chat: "${trimmed.substring(0, 60)}"`);
+    if (waitingForResponseRef.current) waitingForResponseRef.current = false;
+    processUserInputRef.current(trimmed);
+  }, []);
+
   useEffect(() => {
     if (!continuousActive) return;
 
-    let prevSnapshot = "";
-    let stableSince = Date.now();
-    let totalCharsSent = 0;
+    // Reset state on start
+    coalesceBufferRef.current = "";
+    lastCommitTimeRef.current = 0;
+    lastInterimSnapshotRef.current = "";
+    interimStableSinceRef.current = Date.now();
+    totalCharsSentRef.current = 0;
+    lastPublishedRef.current = "";
 
     const interval = setInterval(() => {
       if (sessionEndedRef.current) return;
 
-      // 1. Check for committed text first (highest priority, no delay)
+      const now = Date.now();
+
+      // ── Tier 1: Committed text with 300ms coalescing window ──
       const committed = consumeNewText();
       if (committed.length > 0) {
-        console.log(`[AutoSend] Committed text → chat: "${committed.substring(0, 50)}"`);
-        processUserInputRef.current(committed);
-        // Keep totalCharsSent in sync with committed progress
-        const full = speechTranscriptRef.current.trim();
-        totalCharsSent = full.length;
-        prevSnapshot = (full + (interimRef.current ? " " + interimRef.current : "")).trim();
-        stableSince = Date.now();
+        coalesceBufferRef.current += (coalesceBufferRef.current ? " " : "") + committed;
+        lastCommitTimeRef.current = now;
+        // Update position tracking
+        totalCharsSentRef.current = speechTranscriptRef.current.trim().length;
+        return; // Wait for coalescing window before sending
+      }
+
+      // If we have buffered committed text and 300ms passed since last commit → flush
+      if (coalesceBufferRef.current.length > 0 && (now - lastCommitTimeRef.current) >= 300) {
+        flushToChat(coalesceBufferRef.current, "committed");
+        coalesceBufferRef.current = "";
+        // Reset interim tracking since committed text supersedes it
+        lastInterimSnapshotRef.current = interimRef.current;
+        interimStableSinceRef.current = now;
         return;
       }
 
-      // 2. Fallback: check if interim text has been stable (user paused speaking)
+      // ── Tier 2: Stable interim fallback (no commits, user paused) ──
+      // Only fires if there's no pending committed text in the buffer
+      if (coalesceBufferRef.current.length > 0) return;
+
       const interim = interimRef.current;
-      const full = speechTranscriptRef.current;
-      const snapshot = (full + (interim ? " " + interim : "")).trim();
-
-      if (snapshot !== prevSnapshot) {
-        // Text is still changing — user is speaking
-        prevSnapshot = snapshot;
-        stableSince = Date.now();
+      if (interim !== lastInterimSnapshotRef.current) {
+        // Interim is still changing — user is speaking
+        lastInterimSnapshotRef.current = interim;
+        interimStableSinceRef.current = now;
         return;
       }
 
-      // Text has been stable — if 1.5s passed and there's unsent content, send it
-      const stableMs = Date.now() - stableSince;
-      if (snapshot.length > totalCharsSent && stableMs >= 1500) {
-        const newPortion = snapshot.substring(totalCharsSent).trim();
+      // Interim stable for 1.5s and has unsent content → send
+      const stableMs = now - interimStableSinceRef.current;
+      const fullText = (speechTranscriptRef.current + (interim ? " " + interim : "")).trim();
+      if (interim.length > 0 && fullText.length > totalCharsSentRef.current && stableMs >= 1500) {
+        const newPortion = fullText.substring(totalCharsSentRef.current).trim();
         if (newPortion.length > 0) {
-          console.log(`[AutoSend] Stable interim → chat (${stableMs}ms): "${newPortion.substring(0, 50)}"`);
-          processUserInputRef.current(newPortion);
-          totalCharsSent = snapshot.length;
-          consumeNewText(); // keep STT hook's internal pointer in sync
+          flushToChat(newPortion, `stable-interim(${stableMs}ms)`);
+          totalCharsSentRef.current = fullText.length;
+          consumeNewText(); // keep STT hook pointer in sync
+          // Reset interim tracking
+          lastInterimSnapshotRef.current = "";
+          interimStableSinceRef.current = now;
         }
       }
-    }, 500);
+    }, 100); // Poll at 100ms for responsive coalescing
 
     return () => clearInterval(interval);
-  }, [continuousActive, consumeNewText]);
+  }, [continuousActive, consumeNewText, flushToChat]);
 
   const startContinuousMode = useCallback(async () => {
     setContinuousActive(true);
@@ -215,14 +258,15 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
   }, [startListening, startProsody, startVAD, startRecording]);
 
   const stopContinuousMode = useCallback(() => {
-    // Flush any remaining text (committed + interim) before stopping
+    // Flush any remaining text: coalesce buffer + committed + interim
+    const buffered = coalesceBufferRef.current;
     const committed = consumeNewText();
     const interim = interimRef.current;
-    const remaining = (committed + (interim ? " " + interim : "")).trim();
+    const remaining = (buffered + (committed ? " " + committed : "") + (interim ? " " + interim : "")).trim();
     if (remaining.length > 0 && !sessionEndedRef.current) {
-      console.log(`[AutoSend] Flush on stop: "${remaining.substring(0, 50)}"`);
-      processUserInputRef.current(remaining);
+      flushToChat(remaining, "flush-on-stop");
     }
+    coalesceBufferRef.current = "";
 
     setContinuousActive(false);
     stopListening();
@@ -235,7 +279,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
       sharedStreamRef.current = null;
     }
     console.log("[Continuous] Stopped");
-  }, [stopListening, stopProsody, stopVAD, consumeNewText]);
+  }, [stopListening, stopProsody, stopVAD, consumeNewText, flushToChat]);
 
   // Process interrupt queue sequentially with round-robin fairness
   const processNextInterrupt = useCallback(() => {
@@ -569,14 +613,15 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     setIsEnding(true);
     sessionEndedRef.current = true;
 
-    // Flush any remaining text (committed + interim) before stopping
-    const committed = consumeNewText();
-    const interim = interimRef.current;
-    const remaining = (committed + (interim ? " " + interim : "")).trim();
+    // Flush any remaining text: coalesce buffer + committed + interim
+    const buffered = coalesceBufferRef.current;
+    const endCommitted = consumeNewText();
+    const endInterim = interimRef.current;
+    const remaining = (buffered + (endCommitted ? " " + endCommitted : "") + (endInterim ? " " + endInterim : "")).trim();
     if (remaining.length > 0) {
-      console.log(`[AutoSend] Flush on end: "${remaining.substring(0, 50)}"`);
-      processUserInputRef.current(remaining);
+      flushToChat(remaining, "flush-on-end");
     }
+    coalesceBufferRef.current = "";
 
     // Hard stop everything
     clearInterval(timerRef.current);
