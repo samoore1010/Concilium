@@ -498,31 +498,55 @@ wss.on("connection", (clientWs: WebSocket) => {
 
   console.log("[WS-STT] Client connected, opening ElevenLabs connection...");
 
+  // Buffer client messages until ElevenLabs connection is ready
+  const pendingMessages: string[] = [];
+  let elReady = false;
+  let chunksFwd = 0;
+
   // Connect to ElevenLabs with proper header auth
-  const elUrl = "wss://api.elevenlabs.io/v1/speech-to-text/realtime?model_id=scribe_v1&language_code=en&audio_format=pcm_16000&commit_strategy=vad&vad_silence_threshold_ms=1500";
+  const elUrl = "wss://api.elevenlabs.io/v1/speech-to-text/realtime?model_id=scribe_v1&language_code=en&audio_format=pcm_16000&commit_strategy=vad&vad_silence_threshold_ms=2000";
   const elWs = new WebSocket(elUrl, { headers: { "xi-api-key": apiKey } });
 
   elWs.on("open", () => {
-    console.log("[WS-STT] Connected to ElevenLabs");
-    clientWs.send(JSON.stringify({ message_type: "session_started" }));
+    console.log(`[WS-STT] Connected to ElevenLabs, flushing ${pendingMessages.length} buffered messages`);
+    elReady = true;
+
+    // Flush all buffered client messages
+    for (const msg of pendingMessages) {
+      try { elWs.send(msg); chunksFwd++; } catch {}
+    }
+    pendingMessages.length = 0;
+    if (chunksFwd > 0) console.log(`[WS-STT] Flushed ${chunksFwd} buffered chunks to ElevenLabs`);
   });
 
-  // Forward ElevenLabs messages to client
+  // Forward ElevenLabs messages to client (including the real session_started)
   elWs.on("message", (data: Buffer) => {
+    const str = data.toString();
+    try {
+      const msg = JSON.parse(str);
+      console.log(`[WS-STT] EL→Client: ${msg.message_type || msg.type || "unknown"}`);
+    } catch {}
     if (clientWs.readyState === WebSocket.OPEN) {
-      clientWs.send(data.toString());
+      clientWs.send(str);
     }
   });
 
-  // Forward client audio to ElevenLabs
+  // Forward client audio to ElevenLabs (buffer if not ready)
   clientWs.on("message", (data: Buffer) => {
-    if (elWs.readyState === WebSocket.OPEN) {
-      elWs.send(data.toString());
+    const str = data.toString();
+    if (elReady && elWs.readyState === WebSocket.OPEN) {
+      try { elWs.send(str); chunksFwd++; } catch {}
+      if (chunksFwd % 30 === 0) console.log(`[WS-STT] Forwarded ${chunksFwd} chunks`);
+    } else {
+      // Buffer until ElevenLabs is connected (keep up to 50 chunks)
+      if (pendingMessages.length < 50) {
+        pendingMessages.push(str);
+      }
     }
   });
 
   elWs.on("close", (code: number, reason: Buffer) => {
-    console.log(`[WS-STT] ElevenLabs closed: ${code} ${reason.toString()}`);
+    console.log(`[WS-STT] ElevenLabs closed: code=${code} reason="${reason.toString()}" totalChunksFwd=${chunksFwd}`);
     if (clientWs.readyState === WebSocket.OPEN) clientWs.close();
   });
 
@@ -532,7 +556,7 @@ wss.on("connection", (clientWs: WebSocket) => {
   });
 
   clientWs.on("close", () => {
-    console.log("[WS-STT] Client disconnected");
+    console.log(`[WS-STT] Client disconnected (chunksFwd=${chunksFwd})`);
     if (elWs.readyState === WebSocket.OPEN) elWs.close();
   });
 });
