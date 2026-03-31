@@ -1,9 +1,7 @@
 import express from "express";
 import cors from "cors";
 import path from "path";
-import http from "http";
 import { fileURLToPath } from "url";
-import { WebSocketServer, WebSocket } from "ws";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { getPersonaPrompt, buildReactionPrompt, buildFeedbackPrompt } from "./personaPrompts.js";
@@ -114,41 +112,33 @@ app.get("/api/tts/test-elevenlabs", async (_req, res) => {
   res.json({ keyPreview, keyLength: apiKey.length, modelsStatus, ttsStatus, ttsDetail });
 });
 
-// === ElevenLabs STT Token (for client-side WebSocket) ===
+// === ElevenLabs STT Token (official single-use token flow) ===
 
-app.get("/api/elevenlabs-stt-token", async (_req, res) => {
+app.get("/api/scribe-token", async (_req, res) => {
   const apiKey = process.env.ELEVENLABS_API_KEY;
-  if (!apiKey) return res.json({ available: false });
+  if (!apiKey) return res.status(503).json({ available: false, error: "ElevenLabs not configured" });
 
   try {
-    // Try to get a signed URL / short-lived token for WebSocket auth
-    // ElevenLabs has different token endpoints depending on version
-    const endpoints = [
-      "https://api.elevenlabs.io/v1/speech-to-text/get-websocket-token",
-      "https://api.elevenlabs.io/v1/models/scribe_v2_realtime/get-signed-url",
-    ];
+    const response = await fetch("https://api.elevenlabs.io/v1/single-use-token/realtime_scribe", {
+      method: "POST",
+      headers: { "xi-api-key": apiKey },
+    });
 
-    for (const url of endpoints) {
-      try {
-        const response = await fetch(url, { method: "GET", headers: { "xi-api-key": apiKey } });
-        if (response.ok) {
-          const data = await response.json();
-          const signedToken = data.token || data.signed_url || data.url;
-          if (signedToken) {
-            console.log(`[STT Token] Got signed token from ${url}`);
-            res.json({ available: true, token: signedToken, type: "signed" });
-            return;
-          }
-        }
-      } catch {}
+    if (!response.ok) {
+      const detail = await response.text();
+      console.error(`[STT Token] Failed ${response.status}: ${detail}`);
+      return res.status(response.status).json({ available: false, error: "Failed to mint single-use token", detail });
     }
 
-    // Fall back to passing the API key directly
-    console.log("[STT Token] No signed token endpoint available, using API key");
-    res.json({ available: true, token: apiKey, type: "api_key" });
+    const data = await response.json();
+    if (!data?.token) {
+      return res.status(502).json({ available: false, error: "Token missing from ElevenLabs response" });
+    }
+
+    res.json({ available: true, token: data.token, type: "single_use" });
   } catch (err: any) {
     console.error("[STT Token] Error:", err.message);
-    res.json({ available: true, token: apiKey, type: "api_key" });
+    res.status(500).json({ available: false, error: "Unable to mint token", detail: err.message });
   }
 });
 
@@ -483,92 +473,15 @@ app.use((_req: any, res: any) => {
 });
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
-const server = http.createServer(app);
 
-// === WebSocket proxy for ElevenLabs STT ===
-const wss = new WebSocketServer({ server, path: "/ws/stt" });
-
-wss.on("connection", (clientWs: WebSocket) => {
-  const apiKey = process.env.ELEVENLABS_API_KEY;
-  if (!apiKey) {
-    clientWs.send(JSON.stringify({ message_type: "error", message: "No ElevenLabs key" }));
-    clientWs.close();
-    return;
-  }
-
-  console.log("[WS-STT] Client connected, opening ElevenLabs connection...");
-
-  // Buffer client messages until ElevenLabs connection is ready
-  const pendingMessages: string[] = [];
-  let elReady = false;
-  let chunksFwd = 0;
-
-  // Connect to ElevenLabs with proper header auth
-  const elUrl = "wss://api.elevenlabs.io/v1/speech-to-text/realtime?model_id=scribe_v1&language_code=en&audio_format=pcm_16000&commit_strategy=vad&vad_silence_threshold_ms=2000";
-  const elWs = new WebSocket(elUrl, { headers: { "xi-api-key": apiKey } });
-
-  elWs.on("open", () => {
-    console.log(`[WS-STT] Connected to ElevenLabs, flushing ${pendingMessages.length} buffered messages`);
-    elReady = true;
-
-    // Flush all buffered client messages
-    for (const msg of pendingMessages) {
-      try { elWs.send(msg); chunksFwd++; } catch {}
-    }
-    pendingMessages.length = 0;
-    if (chunksFwd > 0) console.log(`[WS-STT] Flushed ${chunksFwd} buffered chunks to ElevenLabs`);
-  });
-
-  // Forward ElevenLabs messages to client (including the real session_started)
-  elWs.on("message", (data: Buffer) => {
-    const str = data.toString();
-    try {
-      const msg = JSON.parse(str);
-      console.log(`[WS-STT] EL→Client: ${msg.message_type || msg.type || "unknown"}`);
-    } catch {}
-    if (clientWs.readyState === WebSocket.OPEN) {
-      clientWs.send(str);
-    }
-  });
-
-  // Forward client audio to ElevenLabs (buffer if not ready)
-  clientWs.on("message", (data: Buffer) => {
-    const str = data.toString();
-    if (elReady && elWs.readyState === WebSocket.OPEN) {
-      try { elWs.send(str); chunksFwd++; } catch {}
-      if (chunksFwd % 30 === 0) console.log(`[WS-STT] Forwarded ${chunksFwd} chunks`);
-    } else {
-      // Buffer until ElevenLabs is connected (keep up to 50 chunks)
-      if (pendingMessages.length < 50) {
-        pendingMessages.push(str);
-      }
-    }
-  });
-
-  elWs.on("close", (code: number, reason: Buffer) => {
-    console.log(`[WS-STT] ElevenLabs closed: code=${code} reason="${reason.toString()}" totalChunksFwd=${chunksFwd}`);
-    if (clientWs.readyState === WebSocket.OPEN) clientWs.close();
-  });
-
-  elWs.on("error", (err: Error) => {
-    console.error("[WS-STT] ElevenLabs error:", err.message);
-    if (clientWs.readyState === WebSocket.OPEN) clientWs.close();
-  });
-
-  clientWs.on("close", () => {
-    console.log(`[WS-STT] Client disconnected (chunksFwd=${chunksFwd})`);
-    if (elWs.readyState === WebSocket.OPEN) elWs.close();
-  });
-});
-
-server.listen(PORT, "0.0.0.0", () => {
+app.listen(PORT, "0.0.0.0", () => {
   const ttsProviders: string[] = [];
   if (process.env.OPENAI_API_KEY) ttsProviders.push("openai");
   if (process.env.ELEVENLABS_API_KEY) ttsProviders.push("elevenlabs");
   console.log(`Server running on port ${PORT}`);
   console.log(`LLM: ${!!process.env.ANTHROPIC_API_KEY ? "yes" : "no"}`);
   console.log(`TTS providers: ${ttsProviders.length > 0 ? ttsProviders.join(", ") : "none"}`);
-  console.log(`STT proxy: ${!!process.env.ELEVENLABS_API_KEY ? "yes" : "no"}`);
+  console.log(`STT client-token flow: ${!!process.env.ELEVENLABS_API_KEY ? "yes" : "no"}`);
 });
 
 function safeParseJSON(text: string): any {
