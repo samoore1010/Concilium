@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import { motion } from "framer-motion";
 
 export interface ScriptConfig {
@@ -10,6 +10,65 @@ interface ScriptSetupProps {
   sessionType: string;
   onContinue: (config: ScriptConfig) => void;
   onBack: () => void;
+}
+
+const SUGGESTED_TOPICS: Record<string, string[]> = {
+  "business-pitch": [
+    "An AI-powered platform that matches freelance workers with short-term housing near their job sites",
+    "A subscription service that delivers locally-sourced, chef-prepared meals to office buildings",
+    "A fintech app that helps small business owners manage cash flow with predictive analytics",
+    "A marketplace connecting retired professionals with startups for part-time advisory roles",
+    "A SaaS tool that automates compliance reporting for mid-size financial firms",
+    "A wearable device that monitors workplace ergonomics and suggests posture corrections in real-time",
+    "A carbon credit trading platform designed specifically for small and medium enterprises",
+    "An EdTech platform that uses AI tutors to prepare students for professional certification exams",
+  ],
+  "mock-trial": [
+    "Motion for summary judgment in a defamation case where the plaintiff admitted the statements were true",
+    "Opening statement in a breach of contract dispute over a failed software delivery",
+    "Closing argument in a wrongful termination case involving alleged whistleblower retaliation",
+    "Cross-examination of an expert witness in a medical malpractice case",
+    "Motion to suppress evidence obtained through an allegedly unlawful search of digital records",
+    "Opening statement in a trade secret misappropriation case between former business partners",
+    "Argument for preliminary injunction in a non-compete agreement dispute",
+    "Closing argument in a product liability case involving a defective consumer device",
+  ],
+  "public-speaking": [
+    "How remote work is reshaping urban planning and community design",
+    "The science of habit formation and how to make lasting behavioral changes",
+    "Why emotional intelligence matters more than IQ in modern leadership",
+    "The hidden costs of social media on attention span and deep thinking",
+    "How space exploration technology is solving problems on Earth",
+    "The future of food: lab-grown meat, vertical farms, and feeding 10 billion people",
+    "Why failure is the most underrated skill in education",
+    "The ethics of AI decision-making in healthcare, criminal justice, and hiring",
+  ],
+  "sales-demo": [
+    "Demonstrating a CRM platform that uses AI to prioritize leads and predict deal outcomes",
+    "Pitching a cybersecurity solution to a mid-size company that just experienced a data breach",
+    "Walking through a project management tool designed for creative agencies",
+    "Presenting an HR analytics platform that predicts employee attrition risk",
+    "Demonstrating a cloud migration service to a company running legacy on-premise infrastructure",
+    "Pitching an e-commerce personalization engine to a retail brand with declining conversion rates",
+    "Presenting a document automation tool to a law firm spending hours on manual contract review",
+    "Demonstrating a fleet management platform to a logistics company looking to cut fuel costs",
+  ],
+};
+
+function getRandomTopic(sessionType: string, exclude?: string): string {
+  const topics = SUGGESTED_TOPICS[sessionType] || SUGGESTED_TOPICS["business-pitch"];
+  const available = exclude ? topics.filter((t) => t !== exclude) : topics;
+  return available[Math.floor(Math.random() * available.length)];
+}
+
+function getSessionLabel(sessionType: string): string {
+  const labels: Record<string, string> = {
+    "business-pitch": "Business Pitch",
+    "mock-trial": "Mock Trial",
+    "public-speaking": "Public Speaking",
+    "sales-demo": "Sales Demo",
+  };
+  return labels[sessionType] || sessionType.replace(/-/g, " ");
 }
 
 export function ScriptSetup({ sessionType, onContinue, onBack }: ScriptSetupProps) {
@@ -40,6 +99,11 @@ export function ScriptSetup({ sessionType, onContinue, onBack }: ScriptSetupProp
     }
     setIsGenerating(false);
   };
+
+  const handleSuggestTopic = useCallback(() => {
+    const topic = getRandomTopic(sessionType, description);
+    setDescription(topic);
+  }, [sessionType, description]);
 
   const handleContinue = () => {
     if (mode === "upload" && uploadedText.trim()) {
@@ -106,11 +170,19 @@ export function ScriptSetup({ sessionType, onContinue, onBack }: ScriptSetupProp
         {mode === "generate" && (
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
             <div>
-              <label className="text-xs text-white/50 mb-1 block">Describe your talk</label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-xs text-white/50">Describe your talk</label>
+                <button
+                  onClick={handleSuggestTopic}
+                  className="text-[10px] px-2.5 py-1 rounded-lg bg-purple-500/15 text-purple-300 hover:bg-purple-500/25 transition-colors flex items-center gap-1"
+                >
+                  <span>🎲</span> Suggest a {getSessionLabel(sessionType)} topic
+                </button>
+              </div>
               <textarea
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="e.g., A pitch for a mobile app that helps college students find affordable housing near their campus..."
+                placeholder={`e.g., ${getRandomTopic(sessionType)}`}
                 className="w-full h-24 bg-white/5 border border-white/10 rounded-xl p-3 text-sm text-white placeholder-white/30 outline-none focus:border-purple-400/50 resize-none"
               />
             </div>

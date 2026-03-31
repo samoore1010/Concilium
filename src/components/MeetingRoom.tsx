@@ -851,6 +851,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
               <Teleprompter
                 script={scriptConfig.text}
                 isActive={showTeleprompter}
+                isLive={continuousActive}
                 onToggle={() => setShowTeleprompter(!showTeleprompter)}
               />
             )}
