@@ -25,6 +25,9 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
   const chunksSentRef = useRef(0);
   const activeRef = useRef(false);
 
+  // Pre-buffer audio chunks before WS is open so the first message arrives immediately
+  const pendingChunksRef = useRef<string[]>([]);
+
   useEffect(() => {
     fetch("/api/elevenlabs-stt-token")
       .then((r) => r.json())
@@ -35,24 +38,171 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
   const startListening = useCallback(async () => {
     if (activeRef.current) return;
     activeRef.current = true;
+    pendingChunksRef.current = [];
+    chunksSentRef.current = 0;
 
+    // --- Step 1: Get microphone access ---
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
     });
     streamRef.current = stream;
 
+    // --- Step 2: Set up audio pipeline BEFORE opening WebSocket ---
+    const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    if (ctx.state === "suspended") await ctx.resume();
+    contextRef.current = ctx;
+
+    const nativeRate = ctx.sampleRate;
+    const downsampleRatio = nativeRate / 16000;
+    console.log(`[EL-STT] Native rate: ${nativeRate}Hz, ratio: ${downsampleRatio.toFixed(2)}`);
+
+    // Encoder: convert Float32 buffer → base64 PCM16 string
+    function encodeChunk(floatData: Float32Array): string {
+      let samples: Float32Array;
+      if (downsampleRatio > 1.01) {
+        const newLen = Math.floor(floatData.length / downsampleRatio);
+        samples = new Float32Array(newLen);
+        for (let i = 0; i < newLen; i++) {
+          samples[i] = floatData[Math.floor(i * downsampleRatio)];
+        }
+      } else {
+        samples = floatData;
+      }
+      const pcm16 = new Int16Array(samples.length);
+      for (let i = 0; i < samples.length; i++) {
+        pcm16[i] = Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32767)));
+      }
+      const bytes = new Uint8Array(pcm16.buffer);
+      let binary = "";
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      return btoa(binary);
+    }
+
+    // Handler called from audio pipeline with a ready-to-encode float buffer
+    function onAudioChunk(floatData: Float32Array) {
+      if (!activeRef.current) return;
+      const audioBase64 = encodeChunk(floatData);
+      const payload = JSON.stringify({
+        message_type: "input_audio_chunk",
+        audio_base_64: audioBase64,
+        commit: false,
+        sample_rate: 16000,
+      });
+
+      const ws = wsRef.current;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        // Flush any pending chunks first
+        const pending = pendingChunksRef.current.splice(0);
+        for (const p of pending) {
+          try { ws.send(p); } catch {}
+        }
+        try {
+          ws.send(payload);
+          chunksSentRef.current++;
+          if (chunksSentRef.current === 1) console.log(`[EL-STT] First chunk sent (live)`);
+          if (chunksSentRef.current % 30 === 0) console.log(`[EL-STT] Chunks: ${chunksSentRef.current}`);
+        } catch {}
+      } else {
+        // WS not open yet — buffer up to 30 chunks (~3s) so we don't lose the start
+        if (pendingChunksRef.current.length < 30) {
+          pendingChunksRef.current.push(payload);
+        }
+      }
+    }
+
+    // Try AudioWorklet first, fall back to ScriptProcessorNode
+    let pipelineReady = false;
+    try {
+      const workletCode = `
+        class PCMProcessor extends AudioWorkletProcessor {
+          constructor() {
+            super();
+            this.buffer = new Float32Array(0);
+            this.bufferSize = 4800; // ~100ms at 48kHz
+          }
+          process(inputs) {
+            const input = inputs[0];
+            if (input.length > 0 && input[0].length > 0) {
+              const chunk = input[0];
+              const newBuf = new Float32Array(this.buffer.length + chunk.length);
+              newBuf.set(this.buffer);
+              newBuf.set(chunk, this.buffer.length);
+              this.buffer = newBuf;
+              if (this.buffer.length >= this.bufferSize) {
+                this.port.postMessage(this.buffer.slice());
+                this.buffer = new Float32Array(0);
+              }
+            }
+            return true;
+          }
+        }
+        registerProcessor('pcm-processor', PCMProcessor);
+      `;
+      const blob = new Blob([workletCode], { type: "application/javascript" });
+      const url = URL.createObjectURL(blob);
+      await ctx.audioWorklet.addModule(url);
+      URL.revokeObjectURL(url);
+
+      const source = ctx.createMediaStreamSource(stream);
+      const workletNode = new AudioWorkletNode(ctx, "pcm-processor");
+      workletRef.current = workletNode;
+
+      workletNode.port.onmessage = (e: MessageEvent) => {
+        onAudioChunk(e.data as Float32Array);
+      };
+
+      source.connect(workletNode);
+      workletNode.connect(ctx.destination);
+      pipelineReady = true;
+      console.log("[EL-STT] AudioWorklet pipeline running ✓");
+    } catch (workletErr) {
+      console.log("[EL-STT] AudioWorklet failed, trying ScriptProcessor...", workletErr);
+    }
+
+    if (!pipelineReady) {
+      try {
+        const source = ctx.createMediaStreamSource(stream);
+        const processor = ctx.createScriptProcessor(4096, 1, 1);
+        source.connect(processor);
+        processor.connect(ctx.destination);
+
+        processor.onaudioprocess = (e: AudioProcessingEvent) => {
+          const inputData = e.inputBuffer.getChannelData(0);
+          onAudioChunk(new Float32Array(inputData));
+        };
+        pipelineReady = true;
+        console.log("[EL-STT] ScriptProcessor pipeline running ✓");
+      } catch (spErr) {
+        console.error("[EL-STT] ScriptProcessor also failed:", spErr);
+        cleanup();
+        activeRef.current = false;
+        return;
+      }
+    }
+
+    // --- Step 3: Audio pipeline is running and buffering — NOW open WebSocket ---
+    console.log("[EL-STT] Pipeline ready, opening WebSocket...");
     const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${wsProtocol}//${window.location.host}/ws/stt`;
-    console.log("[EL-STT] Connecting via proxy...");
 
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onopen = () => {
-      console.log("[EL-STT] Connected, setting up AudioWorklet...");
+      console.log(`[EL-STT] WS open — flushing ${pendingChunksRef.current.length} buffered chunks`);
       setIsListening(true);
-      chunksSentRef.current = 0;
-      setupAudioPipeline(stream, ws);
+
+      // Flush all pre-buffered audio immediately
+      const pending = pendingChunksRef.current.splice(0);
+      for (const p of pending) {
+        try {
+          ws.send(p);
+          chunksSentRef.current++;
+        } catch {}
+      }
+      if (chunksSentRef.current > 0) {
+        console.log(`[EL-STT] Flushed ${chunksSentRef.current} buffered chunks`);
+      }
     };
 
     ws.onmessage = (event) => {
@@ -89,161 +239,11 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
     };
   }, []);
 
-  async function setupAudioPipeline(stream: MediaStream, ws: WebSocket) {
-    try {
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      if (ctx.state === "suspended") await ctx.resume();
-      contextRef.current = ctx;
-
-      const nativeRate = ctx.sampleRate;
-      console.log(`[EL-STT] Native rate: ${nativeRate}Hz`);
-
-      // Try AudioWorklet first (modern, reliable), fall back to ScriptProcessor
-      try {
-        // Create an inline AudioWorklet processor
-        const workletCode = `
-          class PCMProcessor extends AudioWorkletProcessor {
-            constructor() {
-              super();
-              this.buffer = new Float32Array(0);
-              this.bufferSize = 4800; // ~100ms at 48kHz, will be downsampled to ~1600 at 16kHz
-            }
-            process(inputs) {
-              const input = inputs[0];
-              if (input.length > 0 && input[0].length > 0) {
-                // Append to buffer
-                const newBuf = new Float32Array(this.buffer.length + input[0].length);
-                newBuf.set(this.buffer);
-                newBuf.set(input[0], this.buffer.length);
-                this.buffer = newBuf;
-
-                // Send when buffer is full (~100ms of audio)
-                if (this.buffer.length >= this.bufferSize) {
-                  this.port.postMessage(this.buffer);
-                  this.buffer = new Float32Array(0);
-                }
-              }
-              return true;
-            }
-          }
-          registerProcessor('pcm-processor', PCMProcessor);
-        `;
-        const blob = new Blob([workletCode], { type: "application/javascript" });
-        const url = URL.createObjectURL(blob);
-        await ctx.audioWorklet.addModule(url);
-        URL.revokeObjectURL(url);
-
-        const source = ctx.createMediaStreamSource(stream);
-        const workletNode = new AudioWorkletNode(ctx, "pcm-processor");
-        workletRef.current = workletNode;
-
-        const downsampleRatio = nativeRate / 16000;
-
-        workletNode.port.onmessage = (e: MessageEvent) => {
-          if (!activeRef.current || ws.readyState !== WebSocket.OPEN) return;
-
-          const floatData: Float32Array = e.data;
-
-          // Downsample to 16kHz
-          let samples: Float32Array;
-          if (downsampleRatio > 1.01) {
-            const newLen = Math.floor(floatData.length / downsampleRatio);
-            samples = new Float32Array(newLen);
-            for (let i = 0; i < newLen; i++) {
-              samples[i] = floatData[Math.floor(i * downsampleRatio)];
-            }
-          } else {
-            samples = floatData;
-          }
-
-          // Convert to Int16 PCM
-          const pcm16 = new Int16Array(samples.length);
-          for (let i = 0; i < samples.length; i++) {
-            pcm16[i] = Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32767)));
-          }
-
-          // Encode and send
-          const bytes = new Uint8Array(pcm16.buffer);
-          let binary = "";
-          for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-
-          try {
-            ws.send(JSON.stringify({
-              message_type: "input_audio_chunk",
-              audio_base_64: btoa(binary),
-              commit: false,
-              sample_rate: 16000,
-            }));
-            chunksSentRef.current++;
-            if (chunksSentRef.current === 1) console.log(`[EL-STT] First chunk via AudioWorklet: ${samples.length} samples`);
-            if (chunksSentRef.current % 30 === 0) console.log(`[EL-STT] Chunks: ${chunksSentRef.current}`);
-          } catch {}
-        };
-
-        source.connect(workletNode);
-        workletNode.connect(ctx.destination); // Must connect to destination
-        console.log("[EL-STT] Using AudioWorklet pipeline ✓");
-        return;
-      } catch (workletErr) {
-        console.log("[EL-STT] AudioWorklet not available, trying ScriptProcessor...", workletErr);
-      }
-
-      // Fallback: ScriptProcessorNode
-      const source = ctx.createMediaStreamSource(stream);
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
-      const downsampleRatio = nativeRate / 16000;
-
-      // MUST connect through to destination for Chrome
-      source.connect(processor);
-      processor.connect(ctx.destination);
-
-      processor.onaudioprocess = (e: AudioProcessingEvent) => {
-        if (!activeRef.current || ws.readyState !== WebSocket.OPEN) return;
-
-        const inputData = e.inputBuffer.getChannelData(0);
-        let samples: Float32Array;
-        if (downsampleRatio > 1.01) {
-          const newLen = Math.floor(inputData.length / downsampleRatio);
-          samples = new Float32Array(newLen);
-          for (let i = 0; i < newLen; i++) {
-            samples[i] = inputData[Math.floor(i * downsampleRatio)];
-          }
-        } else {
-          samples = new Float32Array(inputData);
-        }
-
-        const pcm16 = new Int16Array(samples.length);
-        for (let i = 0; i < samples.length; i++) {
-          pcm16[i] = Math.max(-32768, Math.min(32767, Math.round(samples[i] * 32767)));
-        }
-
-        const bytes = new Uint8Array(pcm16.buffer);
-        let binary = "";
-        for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
-
-        try {
-          ws.send(JSON.stringify({
-            message_type: "input_audio_chunk",
-            audio_base_64: btoa(binary),
-            commit: false,
-            sample_rate: 16000,
-          }));
-          chunksSentRef.current++;
-          if (chunksSentRef.current === 1) console.log(`[EL-STT] First chunk via ScriptProcessor: ${samples.length} samples`);
-          if (chunksSentRef.current % 30 === 0) console.log(`[EL-STT] Chunks: ${chunksSentRef.current}`);
-        } catch {}
-      };
-
-      console.log("[EL-STT] Using ScriptProcessor pipeline (fallback)");
-    } catch (err) {
-      console.error("[EL-STT] Audio pipeline setup failed:", err);
-    }
-  }
-
   const cleanup = useCallback(() => {
     if (workletRef.current) { try { workletRef.current.disconnect(); } catch {} workletRef.current = null; }
     if (contextRef.current) { contextRef.current.close().catch(() => {}); contextRef.current = null; }
     if (streamRef.current) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null; }
+    pendingChunksRef.current = [];
   }, []);
 
   const stopListening = useCallback(() => {
