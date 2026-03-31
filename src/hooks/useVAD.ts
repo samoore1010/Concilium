@@ -3,7 +3,7 @@ import { useState, useRef, useCallback, useEffect } from "react";
 interface UseVADReturn {
   isSpeaking: boolean;
   silenceDurationMs: number;
-  start: () => Promise<void>;
+  start: (externalStream?: MediaStream) => Promise<void>;
   stop: () => void;
   onSilenceThreshold: (callback: () => void) => void;
 }
@@ -23,21 +23,29 @@ export function useVAD(silenceThresholdMs: number = 2500): UseVADReturn {
   const activeRef = useRef(false);
 
   const VOLUME_THRESHOLD = 8;
+  const ownsStreamRef = useRef(true);
 
   const onSilenceThreshold = useCallback((callback: () => void) => {
     callbackRef.current = callback;
   }, []);
 
-  const start = useCallback(async () => {
+  const start = useCallback(async (externalStream?: MediaStream) => {
     try {
-      // Request audio — this MUST be called from a user gesture on mobile
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
+      let stream: MediaStream;
+      if (externalStream) {
+        stream = externalStream;
+        ownsStreamRef.current = false;
+      } else {
+        // Request audio — this MUST be called from a user gesture on mobile
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+        ownsStreamRef.current = true;
+      }
       streamRef.current = stream;
 
       // Create AudioContext — also needs user gesture on some mobile browsers
@@ -110,10 +118,10 @@ export function useVAD(silenceThresholdMs: number = 2500): UseVADReturn {
       sourceRef.current.disconnect();
       sourceRef.current = null;
     }
-    if (streamRef.current) {
+    if (streamRef.current && ownsStreamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
     }
+    streamRef.current = null;
     if (audioContextRef.current) {
       audioContextRef.current.close().catch(() => {});
       audioContextRef.current = null;
@@ -128,7 +136,7 @@ export function useVAD(silenceThresholdMs: number = 2500): UseVADReturn {
     return () => {
       activeRef.current = false;
       cancelAnimationFrame(rafRef.current);
-      if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
+      if (streamRef.current && ownsStreamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
       if (audioContextRef.current) audioContextRef.current.close().catch(() => {});
     };
   }, []);

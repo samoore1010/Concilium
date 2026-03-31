@@ -76,6 +76,9 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
   const MAX_CONSECUTIVE = 2;
   const processInterruptRef = useRef<() => void>(() => {});                       // Max questions before forced rotation
 
+  const sharedStreamRef = useRef<MediaStream | null>(null);
+  const processUserInputRef = useRef<(text: string) => void>(() => {});
+
   const theme = getTheme(sessionType);
   const behavior = getSessionBehavior(sessionType);
 
@@ -126,8 +129,25 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
   }, []);
 
   // Continuous mode: two auto-send mechanisms
-  // 1. VAD silence detection (works well on desktop)
-  // 2. Speech recognition finalization (fallback, works on all platforms)
+  // 1. Primary: send immediately when ElevenLabs commits transcript (natural phrase boundary)
+  // 2. Secondary: VAD silence detection triggers send for any remaining buffered text
+  const lastSentTranscriptRef = useRef("");
+
+  // Primary: auto-send on each committed transcript from ElevenLabs
+  useEffect(() => {
+    if (!continuousActive || !speechTranscript) return;
+    if (speechTranscript.length <= lastSentTranscriptRef.current.length) return;
+
+    lastSentTranscriptRef.current = speechTranscript;
+    const newText = consumeNewText();
+    if (newText.length > 0) {
+      if (sessionEndedRef.current) return;
+      if (waitingForResponseRef.current) waitingForResponseRef.current = false;
+      processUserInputRef.current(newText);
+    }
+  }, [continuousActive, speechTranscript, consumeNewText]);
+
+  // Secondary: VAD silence detection sends any remaining unconsumed text
   useEffect(() => {
     if (!continuousActive) return;
     onSilenceThreshold(() => {
@@ -135,51 +155,53 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
       const newText = consumeNewText();
       if (newText.length > 0) {
         if (waitingForResponseRef.current) waitingForResponseRef.current = false;
-        if (isSpeaking) { stopTTS(); isProcessingInterruptRef.current = false; }
-        processUserInput(newText);
+        processUserInputRef.current(newText);
       }
     });
-  }, [continuousActive, onSilenceThreshold, consumeNewText, isSpeaking, stopTTS]);
-
-  // Fallback: auto-send based on speech recognition finalization
-  // This catches cases where VAD doesn't fire (mobile audio context issues)
-  const lastSentTranscriptRef = useRef("");
-  useEffect(() => {
-    if (!continuousActive || !speechTranscript) return;
-    // Only process if transcript has grown since last send
-    if (speechTranscript.length <= lastSentTranscriptRef.current.length) return;
-
-    const timer = setTimeout(() => {
-      if (sessionEndedRef.current || !continuousActive) return;
-      const newText = consumeNewText();
-      if (newText.length > 3) { // Minimum 3 chars to avoid noise
-        lastSentTranscriptRef.current = speechTranscript;
-        if (waitingForResponseRef.current) waitingForResponseRef.current = false;
-        if (isSpeaking) { stopTTS(); isProcessingInterruptRef.current = false; }
-        processUserInput(newText);
-      }
-    }, 2000); // 2 second debounce after last speech recognition update
-
-    return () => clearTimeout(timer);
-  }, [continuousActive, speechTranscript, consumeNewText, isSpeaking, stopTTS]);
+  }, [continuousActive, onSilenceThreshold, consumeNewText]);
 
   const startContinuousMode = useCallback(async () => {
     setContinuousActive(true);
     lastSentTranscriptRef.current = "";
+
+    // Open mic once and share across VAD, prosody, and recorder
+    // (ElevenLabs STT opens its own stream for its AudioWorklet pipeline)
+    let sharedStream: MediaStream | null = null;
+    try {
+      sharedStream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      sharedStreamRef.current = sharedStream;
+    } catch (e) {
+      console.log("[Continuous] Mic access denied, continuing without shared stream");
+    }
+
     startListening();
-    try { await startVAD(); } catch (e) { console.log("[Continuous] VAD unavailable"); }
-    try { startProsody(); } catch (e) { console.log("[Continuous] Prosody unavailable"); }
-    try { await startRecording(); } catch (e) { console.log("[Continuous] Recording unavailable"); }
+    try { await startVAD(sharedStream || undefined); } catch (e) { console.log("[Continuous] VAD unavailable"); }
+    try { await startProsody(sharedStream || undefined); } catch (e) { console.log("[Continuous] Prosody unavailable"); }
+    try { await startRecording(sharedStream || undefined); } catch (e) { console.log("[Continuous] Recording unavailable"); }
     console.log("[Continuous] Started");
-  }, [startListening, startProsody, startVAD]);
+  }, [startListening, startProsody, startVAD, startRecording]);
 
   const stopContinuousMode = useCallback(() => {
+    // Flush any remaining unconsumed text before stopping
+    const remainingText = consumeNewText();
+    if (remainingText.length > 0 && !sessionEndedRef.current) {
+      processUserInputRef.current(remainingText);
+    }
+
     setContinuousActive(false);
     stopListening();
     stopProsody();
     stopVAD();
+
+    // Stop shared mic stream
+    if (sharedStreamRef.current) {
+      sharedStreamRef.current.getTracks().forEach(t => t.stop());
+      sharedStreamRef.current = null;
+    }
     console.log("[Continuous] Stopped");
-  }, [stopListening, stopProsody, stopVAD]);
+  }, [stopListening, stopProsody, stopVAD, consumeNewText]);
 
   // Process interrupt queue sequentially with round-robin fairness
   const processNextInterrupt = useCallback(() => {
@@ -429,6 +451,9 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     }
   }, [personas, elapsed, messageCount, personaStates, updateMetrics, llmAvailable, sessionType, transcript, chatMessages, processNextInterrupt]);
 
+  // Keep processUserInput ref in sync so callbacks always use the latest version
+  processUserInputRef.current = processUserInput;
+
   // Send button handler (for manual/text mode)
   const handleSendMessage = useCallback(() => {
     if (!inputText.trim()) return;
@@ -510,6 +535,12 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     setIsEnding(true);
     sessionEndedRef.current = true;
 
+    // Flush any remaining unconsumed text before stopping
+    const remainingText = consumeNewText();
+    if (remainingText.length > 0) {
+      processUserInputRef.current(remainingText);
+    }
+
     // Hard stop everything
     clearInterval(timerRef.current);
     interruptQueueRef.current = [];
@@ -519,6 +550,13 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     // Await recording stop to ensure all audio data is flushed
     const recordingResult = await stopRecording();
     setContinuousActive(false);
+
+    // Stop shared mic stream after all hooks are done
+    if (sharedStreamRef.current) {
+      sharedStreamRef.current.getTracks().forEach(t => t.stop());
+      sharedStreamRef.current = null;
+    }
+
     const ft = transcript.join(" ");
 
     let feedback: FeedbackItem[];
@@ -577,9 +615,10 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     });
     // Collect recording data (use awaited result, not getRecording)
     const timeline = getTimeline();
+    const sessionDuration = recordingResult.duration || elapsed;
     const recordingData: SessionRecordingData | undefined = recordingResult.url ? {
       audioUrl: recordingResult.url,
-      duration: recordingResult.duration,
+      duration: sessionDuration,
       timeline,
       chatMessages: [...chatMessages],
     } : undefined;
@@ -801,7 +840,11 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
           {continuousActive && (
             <div className="px-3 py-1 border-b border-white/5 flex items-center gap-2">
               <div className="w-2 h-2 rounded-full bg-red-500 animate-pulse flex-shrink-0" />
-              <span className="text-[11px] text-white/40 truncate flex-1">Listening...</span>
+              <span className="text-[11px] text-white/40 truncate flex-1">
+                {interimTranscript ? (
+                  <span className="text-white/60 italic">{interimTranscript}</span>
+                ) : "Listening..."}
+              </span>
               <button
                 onClick={stopContinuousMode}
                 className="px-2 py-0.5 bg-red-500/20 text-red-300 rounded text-[10px] font-medium flex-shrink-0"
