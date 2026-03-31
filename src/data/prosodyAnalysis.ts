@@ -15,9 +15,11 @@ import { ProsodyFrame } from "../hooks/useProsody";
 
 export interface PitchAnalysis {
   averagePitchHz: number;
-  pitchRangeHz: [number, number];    // min, max
-  pitchStdDev: number;               // standard deviation in Hz
-  monotonePercent: number;            // % of time with <10Hz variation
+  pitchRangeHz: [number, number];
+  pitchStdDev: number;
+  coefficientOfVariation: number;    // CV = stdDev/mean — gender-normalized measure
+  monotonePercent: number;
+  upspeakCount: number;             // statements ending with rising pitch
   rating: "monotone" | "low-variety" | "good" | "expressive" | "overly-dramatic";
   advice: string;
 }
@@ -30,34 +32,71 @@ const PITCH_RANGES = {
 
 export function analyzePitch(timeline: ProsodyFrame[]): PitchAnalysis {
   const pitches = timeline.filter((f) => f.pitch > 50 && f.pitch < 500).map((f) => f.pitch);
-  if (pitches.length < 10) return { averagePitchHz: 0, pitchRangeHz: [0, 0], pitchStdDev: 0, monotonePercent: 100, rating: "monotone", advice: "Not enough speech data to analyze pitch." };
+  if (pitches.length < 10) return { averagePitchHz: 0, pitchRangeHz: [0, 0], pitchStdDev: 0, coefficientOfVariation: 0, monotonePercent: 100, upspeakCount: 0, rating: "monotone", advice: "Not enough speech data to analyze pitch." };
 
   const avg = pitches.reduce((a, b) => a + b, 0) / pitches.length;
-  const min = Math.min(...pitches);
-  const max = Math.max(...pitches);
+  // Use 5th/95th percentile for range (excludes outliers per Baken & Orlikoff 2000)
+  const sorted = [...pitches].sort((a, b) => a - b);
+  const p5 = sorted[Math.floor(sorted.length * 0.05)];
+  const p95 = sorted[Math.floor(sorted.length * 0.95)];
   const stdDev = Math.sqrt(pitches.reduce((s, p) => s + (p - avg) ** 2, 0) / pitches.length);
 
-  // Monotone detection: sliding windows where pitch std < 10Hz
+  // Coefficient of Variation — gender-normalized (Rosenberg & Hirschberg 2009)
+  // CV < 0.10 = monotone, 0.15-0.30 = good, > 0.50 = erratic
+  const cv = avg > 0 ? stdDev / avg : 0;
+
+  // Monotone detection: sliding 3-second windows with <10Hz variation
   let monotoneFrames = 0;
-  const windowSize = 30; // ~3 seconds
+  const windowSize = 30;
   for (let i = 0; i < pitches.length - windowSize; i++) {
-    const window = pitches.slice(i, i + windowSize);
-    const wAvg = window.reduce((a, b) => a + b, 0) / window.length;
-    const wStd = Math.sqrt(window.reduce((s, p) => s + (p - wAvg) ** 2, 0) / window.length);
+    const w = pitches.slice(i, i + windowSize);
+    const wAvg = w.reduce((a, b) => a + b, 0) / w.length;
+    const wStd = Math.sqrt(w.reduce((s, p) => s + (p - wAvg) ** 2, 0) / w.length);
     if (wStd < 10) monotoneFrames++;
   }
   const monotonePercent = pitches.length > windowSize ? Math.round((monotoneFrames / (pitches.length - windowSize)) * 100) : 0;
 
-  // Rating based on standard deviation (research: good speakers have stdDev 20-40Hz)
+  // Upspeak detection — statements ending with rising pitch >15% in final frames
+  // (Indicates questioning intonation on declarative statements)
+  let upspeakCount = 0;
+  // Find silence boundaries (end of phrases)
+  for (let i = 20; i < timeline.length - 1; i++) {
+    if (timeline[i + 1].isSilent && !timeline[i].isSilent && timeline[i].pitch > 0) {
+      const endPitch = timeline[i].pitch;
+      const startIdx = Math.max(0, i - 10);
+      const startPitch = timeline.slice(startIdx, i).filter((f) => f.pitch > 0).map((f) => f.pitch);
+      if (startPitch.length > 3) {
+        const phraseAvg = startPitch.reduce((a, b) => a + b, 0) / startPitch.length;
+        if (endPitch > phraseAvg * 1.15) upspeakCount++; // >15% rise at end
+      }
+    }
+  }
+
+  // Rating based on CV (more robust than raw Hz, per Rosenberg & Hirschberg 2009)
   let rating: PitchAnalysis["rating"];
   let advice: string;
-  if (stdDev < 12) { rating = "monotone"; advice = "Your pitch barely changes. Try emphasizing key words by raising your pitch, and lowering it for serious points. Practice reading sentences with exaggerated intonation."; }
-  else if (stdDev < 20) { rating = "low-variety"; advice = "Your pitch has some variation but could be more expressive. Try asking rhetorical questions (pitch rises naturally) and making strong statements (pitch drops for authority)."; }
-  else if (stdDev < 45) { rating = "good"; advice = "Good pitch variety! Your voice sounds engaging and natural. You're using pitch changes to emphasize points effectively."; }
-  else if (stdDev < 65) { rating = "expressive"; advice = "Very expressive delivery! Your pitch variation keeps listeners engaged. Just make sure it feels natural and not forced."; }
-  else { rating = "overly-dramatic"; advice = "Your pitch swings are very wide. While expressiveness is good, extreme variation can sound theatrical. Try channeling the energy into strategic emphasis on key points rather than constant variation."; }
+  if (cv < 0.10) {
+    rating = "monotone";
+    advice = "Your pitch barely changes (CV: " + (cv * 100).toFixed(0) + "%). Charismatic speakers typically vary pitch by 15-30% of their baseline. Try emphasizing 2-3 key words per sentence by raising your pitch, and dropping it for authoritative statements.";
+  } else if (cv < 0.15) {
+    rating = "low-variety";
+    advice = "Your pitch has some variation (CV: " + (cv * 100).toFixed(0) + "%) but could be more engaging. Research shows speakers rated as 'charismatic' use 15-30% pitch variation. Try rhetorical questions (pitch naturally rises) and strong declarations (pitch drops).";
+  } else if (cv < 0.30) {
+    rating = "good";
+    advice = "Excellent pitch variety (CV: " + (cv * 100).toFixed(0) + "%)! Research shows this range correlates strongly with audience engagement and perceived charisma (Rosenberg & Hirschberg, 2009).";
+  } else if (cv < 0.50) {
+    rating = "expressive";
+    advice = "Very expressive pitch variation (CV: " + (cv * 100).toFixed(0) + "%). Your delivery is dynamic and engaging. Just ensure the variation feels natural and serves your message.";
+  } else {
+    rating = "overly-dramatic";
+    advice = "Your pitch variation is extreme (CV: " + (cv * 100).toFixed(0) + "%). While expressiveness is valuable, wide swings can sound theatrical. Channel the energy into deliberate emphasis on 3-4 key words per paragraph rather than constant variation.";
+  }
 
-  return { averagePitchHz: Math.round(avg), pitchRangeHz: [Math.round(min), Math.round(max)], pitchStdDev: Math.round(stdDev), monotonePercent, rating, advice };
+  if (upspeakCount > 3) {
+    advice += ` Also: you ended ${upspeakCount} statements with rising pitch ('upspeak'), which can sound uncertain. Practice ending declarative sentences with a downward pitch to project confidence.`;
+  }
+
+  return { averagePitchHz: Math.round(avg), pitchRangeHz: [Math.round(p5), Math.round(p95)], pitchStdDev: Math.round(stdDev), coefficientOfVariation: Math.round(cv * 100) / 100, monotonePercent, upspeakCount, rating, advice };
 }
 
 // === VOLUME/LOUDNESS ANALYSIS ===
