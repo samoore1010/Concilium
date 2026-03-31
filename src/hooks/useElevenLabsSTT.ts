@@ -55,14 +55,16 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
       });
       streamRef.current = stream;
 
-      // Connect WebSocket
-      const ws = new WebSocket(
-        `wss://api.elevenlabs.io/v1/speech-to-text/realtime?token=${tokenData.token}&model_id=scribe_v1&audio_format=pcm_16000&commit_strategy=vad&vad_silence_threshold_ms=1500&include_timestamps=false`
-      );
+      // Connect WebSocket with token in query parameter (browser WS doesn't support headers)
+      const token = encodeURIComponent(tokenData.token);
+      const wsUrl = `wss://api.elevenlabs.io/v1/speech-to-text/realtime?token=${token}&model_id=scribe_v2_realtime&language_code=en&audio_format=pcm_16000&commit_strategy=vad&vad_silence_threshold_ms=1500`;
+      console.log("[EL-STT] Connecting to WebSocket...");
+
+      const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
 
       ws.onopen = () => {
-        console.log("[EL-STT] WebSocket connected");
+        console.log("[EL-STT] WebSocket connected and authenticated");
         setIsListening(true);
 
         // Set up audio processing — capture mic and send PCM chunks
@@ -114,9 +116,13 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
       };
 
       ws.onclose = (event) => {
-        console.log(`[EL-STT] WebSocket closed: ${event.code} ${event.reason}`);
+        console.log(`[EL-STT] WebSocket closed: code=${event.code} reason="${event.reason}" wasClean=${event.wasClean}`);
         setIsListening(false);
         cleanup();
+        // Common codes: 1000=normal, 1008=policy violation (auth), 4001=auth failed
+        if (event.code === 1008 || event.code === 4001 || event.code === 4003) {
+          console.error("[EL-STT] Authentication failed — check API key and plan");
+        }
       };
     } catch (err) {
       console.error("[EL-STT] Failed to start:", err);

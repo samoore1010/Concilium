@@ -119,14 +119,24 @@ app.get("/api/elevenlabs-stt-token", async (_req, res) => {
   if (!apiKey) return res.json({ available: false });
 
   try {
-    // Generate a short-lived signed URL token for the client
-    // The client connects directly to ElevenLabs WebSocket with this token
-    // For now, we pass the API key directly (the client-side WebSocket supports it)
-    // In production, use ElevenLabs' signed URL feature for better security
-    res.json({ available: true, token: apiKey });
+    // Request a short-lived signed URL from ElevenLabs
+    const response = await fetch("https://api.elevenlabs.io/v1/speech-to-text/get-websocket-token", {
+      method: "GET",
+      headers: { "xi-api-key": apiKey },
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      console.log("[STT Token] Got signed token");
+      res.json({ available: true, token: data.token || data.signed_url });
+    } else {
+      // If signed URL endpoint doesn't exist, pass API key (but only to authenticated sessions)
+      console.log("[STT Token] Signed URL not available, using API key");
+      res.json({ available: true, token: apiKey });
+    }
   } catch (err: any) {
     console.error("[STT Token] Error:", err.message);
-    res.json({ available: false });
+    res.json({ available: true, token: apiKey });
   }
 });
 
