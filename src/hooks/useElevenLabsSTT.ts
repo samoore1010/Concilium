@@ -66,6 +66,14 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
       const nativeRate = ctx.sampleRate;
       console.log(`[EL-STT] Sample rate: ${nativeRate}Hz`);
 
+      // Send initial silent audio chunk immediately to keep connection alive
+      const silentPcm = new Int16Array(1600); // 100ms of silence at 16kHz
+      const silentBytes = new Uint8Array(silentPcm.buffer);
+      let silentBin = "";
+      for (let i = 0; i < silentBytes.length; i++) silentBin += String.fromCharCode(silentBytes[i]);
+      ws.send(JSON.stringify({ message_type: "input_audio_chunk", audio_base_64: btoa(silentBin) }));
+      console.log("[EL-STT] Sent initial keepalive chunk");
+
       const source = ctx.createMediaStreamSource(stream);
 
       // Use AnalyserNode + interval to capture audio (more reliable than ScriptProcessorNode)
@@ -104,7 +112,7 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
         let binary = "";
         for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
 
-        ws.send(JSON.stringify({ type: "input_audio_chunk", data: btoa(binary) }));
+        ws.send(JSON.stringify({ message_type: "input_audio_chunk", audio_base_64: btoa(binary) }));
         chunksSentRef.current++;
 
         if (chunksSentRef.current % 50 === 0) {
@@ -116,9 +124,11 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
     ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
-        if (msg.type === "transcript_partial") {
+        const msgType = msg.message_type || msg.type;
+
+        if (msgType === "transcript_partial" || msgType === "partial_transcript") {
           setInterimTranscript(msg.text || "");
-        } else if (msg.type === "transcript_committed") {
+        } else if (msgType === "transcript_committed" || msgType === "committed_transcript") {
           const text = msg.text || "";
           if (text.trim()) {
             finalTranscriptRef.current += text + " ";
@@ -126,10 +136,12 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
             setInterimTranscript("");
             console.log(`[EL-STT] Committed: "${text.trim().substring(0, 60)}"`);
           }
-        } else if (msg.type === "session_started") {
+        } else if (msgType === "session_started") {
           console.log("[EL-STT] Session active");
-        } else if (msg.type === "error") {
-          console.error("[EL-STT] Error:", msg.message || msg);
+        } else if (msgType === "error") {
+          console.error("[EL-STT] Error:", msg.message || JSON.stringify(msg));
+        } else {
+          console.log(`[EL-STT] Received: ${msgType}`);
         }
       } catch {}
     };
