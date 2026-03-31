@@ -74,7 +74,11 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
   const lastInterruptPersonaRef = useRef<string | null>(null);
   const consecutiveCountRef = useRef(0);          // How many times current persona has spoken in a row
   const MAX_CONSECUTIVE = 2;
-  const processInterruptRef = useRef<() => void>(() => {});                       // Max questions before forced rotation
+  const processInterruptRef = useRef<() => void>(() => {});
+  const interruptTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined); // single interrupt timer
+  const llmInFlightRef = useRef(false);           // debounce: is an LLM reaction call in progress?
+  const lastAudienceSpokeRef = useRef(0);         // cooldown: when did audience last finish speaking?
+  const AUDIENCE_COOLDOWN_MS = 2000;              // min gap between audience speakers                       // Max questions before forced rotation
 
   const sharedStreamRef = useRef<MediaStream | null>(null);
   const processUserInputRef = useRef<(text: string) => void>(() => {});
@@ -138,10 +142,10 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
   // One interval, one publish path, no competing triggers.
   //
   // Strategy:
-  //  - Collect committed chunks into a buffer (coalescing window: 300ms)
-  //  - After 300ms of no new commits, flush buffer as ONE chat message
+  //  - Collect committed chunks into a buffer (coalescing window: 1000ms)
+  //  - After 1000ms of no new commits, flush buffer as ONE chat message
   //  - Fallback: if only interim text and stable for 1.5s, send that instead
-  //  - Dedupe: skip if normalized text matches last sent message
+  //  - Dedupe: skip if normalized text matches or substantially overlaps last sent
   const lastPublishedRef = useRef("");       // dedup: last text sent to chat
   const coalesceBufferRef = useRef("");      // accumulates committed chunks
   const lastCommitTimeRef = useRef(0);       // when last committed chunk arrived
@@ -153,11 +157,15 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     const trimmed = text.trim();
     if (!trimmed || sessionEndedRef.current) return;
 
-    // Dedupe: skip if identical to last published message
+    // Dedupe: skip if identical OR substantial overlap with last published message
     const normalized = trimmed.toLowerCase().replace(/\s+/g, " ");
-    if (normalized === lastPublishedRef.current) {
-      console.log(`[AutoSend] Dedup skip (${source}): "${trimmed.substring(0, 40)}"`);
-      return;
+    const prev = lastPublishedRef.current;
+    if (prev && (normalized === prev || prev.includes(normalized) || normalized.includes(prev))) {
+      // If the new text is longer (superset of prev), allow it — it's a more complete version
+      if (normalized.length <= prev.length) {
+        console.log(`[AutoSend] Dedup skip (${source}): "${trimmed.substring(0, 40)}"`);
+        return;
+      }
     }
     lastPublishedRef.current = normalized;
 
@@ -182,7 +190,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
 
       const now = Date.now();
 
-      // ── Tier 1: Committed text with 300ms coalescing window ──
+      // ── Tier 1: Committed text with 1000ms coalescing window ──
       const committed = consumeNewText();
       if (committed.length > 0) {
         coalesceBufferRef.current += (coalesceBufferRef.current ? " " : "") + committed;
@@ -192,8 +200,8 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
         return; // Wait for coalescing window before sending
       }
 
-      // If we have buffered committed text and 300ms passed since last commit → flush
-      if (coalesceBufferRef.current.length > 0 && (now - lastCommitTimeRef.current) >= 300) {
+      // If we have buffered committed text and 1000ms passed since last commit → flush
+      if (coalesceBufferRef.current.length > 0 && (now - lastCommitTimeRef.current) >= 1000) {
         flushToChat(coalesceBufferRef.current, "committed");
         coalesceBufferRef.current = "";
         // Reset interim tracking since committed text supersedes it
@@ -281,30 +289,43 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     console.log("[Continuous] Stopped");
   }, [stopListening, stopProsody, stopVAD, consumeNewText, flushToChat]);
 
-  // Process interrupt queue sequentially with round-robin fairness
+  // ── Strict audience turn lock ──
+  // One speaker at a time. Single timer for next interrupt (no concurrent timers).
+  // Cooldown between audience speakers. User gets a chance to respond.
+
+  // Schedule the next interrupt with a SINGLE timer (cancels any existing one)
+  const scheduleNextInterrupt = useCallback((delayMs: number) => {
+    clearTimeout(interruptTimerRef.current);
+    interruptTimerRef.current = setTimeout(() => {
+      if (!sessionEndedRef.current) processInterruptRef.current();
+    }, delayMs);
+  }, []);
+
   const processNextInterrupt = useCallback(() => {
     if (sessionEndedRef.current) return;
     if (isProcessingInterruptRef.current) return;
     if (waitingForResponseRef.current) return;
 
+    // Enforce cooldown: don't let another persona speak too soon after the last
+    const sinceLast = Date.now() - lastAudienceSpokeRef.current;
+    if (sinceLast < AUDIENCE_COOLDOWN_MS) {
+      scheduleNextInterrupt(AUDIENCE_COOLDOWN_MS - sinceLast);
+      return;
+    }
+
     const queue = interruptQueueRef.current;
     if (queue.length === 0) return;
 
-    // If the same persona has spoken MAX_CONSECUTIVE times in a row,
-    // try to find a DIFFERENT persona in the queue
+    // Round-robin: if same persona hit MAX_CONSECUTIVE, try a different one
     let nextIdx = 0;
     if (lastInterruptPersonaRef.current && consecutiveCountRef.current >= MAX_CONSECUTIVE) {
       const otherIdx = queue.findIndex((q) => q.personaId !== lastInterruptPersonaRef.current);
-      if (otherIdx !== -1) {
-        nextIdx = otherIdx;
-      }
-      // If no other persona in queue, allow the same one (don't deadlock)
+      if (otherIdx !== -1) nextIdx = otherIdx;
     }
 
     const next = queue.splice(nextIdx, 1)[0];
     if (!next) return;
 
-    // Track consecutive count
     if (next.personaId === lastInterruptPersonaRef.current) {
       consecutiveCountRef.current += 1;
     } else {
@@ -326,14 +347,13 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
       speak(next.text, next.personaId, getVoiceConfig(next.personaId));
     } else {
       isProcessingInterruptRef.current = false;
-      processInterruptRef.current();
     }
-  }, [personas, elapsed, speak]);
+  }, [personas, elapsed, speak, scheduleNextInterrupt]);
 
-  // Keep ref in sync so setTimeout always calls latest version
+  // Keep ref in sync so timers always call latest version
   processInterruptRef.current = processNextInterrupt;
 
-  // When TTS finishes, lock for user response, then allow next interrupt
+  // When TTS finishes: mark cooldown, lock for user response, schedule next
   useEffect(() => {
     if (!isSpeaking && speakingPersonaId) {
       const timer = setTimeout(() => {
@@ -343,23 +363,18 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
         }));
         setSpeakingPersonaId(null);
         isProcessingInterruptRef.current = false;
+        lastAudienceSpokeRef.current = Date.now(); // start cooldown
 
-        // After an audience member finishes speaking, wait for user response
-        // before allowing the next interrupt
+        // Wait for user to respond before allowing next audience member
         if (behavior.allowInterruptions && interruptQueueRef.current.length > 0) {
           waitingForResponseRef.current = true;
-          // Safety timeout: if user doesn't respond within 8s, allow next interrupt
-          setTimeout(() => {
-            if (waitingForResponseRef.current && !sessionEndedRef.current) {
-              waitingForResponseRef.current = false;
-              processInterruptRef.current();
-            }
-          }, 8000);
+          // Safety timeout: if user doesn't respond within 10s, allow next
+          scheduleNextInterrupt(10000);
         }
       }, 300);
       return () => clearTimeout(timer);
     }
-  }, [isSpeaking, speakingPersonaId, behavior.allowInterruptions, processNextInterrupt]);
+  }, [isSpeaking, speakingPersonaId, behavior.allowInterruptions, scheduleNextInterrupt]);
 
   // In manual mode, show interim transcript in input (clears when finalized)
   useEffect(() => {
@@ -400,18 +415,23 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     setChatMessages((prev) => [...prev, { from: "You", text: text.trim(), time: elapsed }]);
     updateMetrics(text.trim());
 
-    // User responded — unlock interrupt queue and allow next after a delay
+    // User responded — unlock interrupt queue and schedule next with cooldown
     if (waitingForResponseRef.current) {
       waitingForResponseRef.current = false;
-      setTimeout(() => {
-        if (!sessionEndedRef.current) processInterruptRef.current();
-      }, 1500); // Brief pause before next audience member can speak
+      scheduleNextInterrupt(AUDIENCE_COOLDOWN_MS);
     }
     const newMC = messageCount + 1;
     setMessageCount(newMC);
 
     if (llmAvailable) {
       // === LLM-POWERED REACTIONS ===
+      // Debounce: skip if a previous LLM call is still in flight
+      if (llmInFlightRef.current) {
+        console.log("[LLM] Skipping reaction call — previous still in flight");
+        return;
+      }
+      llmInFlightRef.current = true;
+
       // Build conversational context from recent chat (so LLM knows what was just asked)
       const recentChat = chatMessages.slice(-8).map((m) => `${m.from}: ${m.text}`);
 
@@ -421,6 +441,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
         sessionType,
         [...recentChat, `You: ${text}`]
       ).then((reactions) => {
+        llmInFlightRef.current = false;
         if (sessionEndedRef.current) return;
 
         // Separate interrupters from non-interrupters
@@ -489,7 +510,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
               }));
               console.log(`[Interrupt] Queued ${chosenInterrupter.personaId}, processing=${isProcessingInterruptRef.current}, waiting=${waitingForResponseRef.current}`);
               if (!isProcessingInterruptRef.current && !waitingForResponseRef.current) {
-                setTimeout(() => processInterruptRef.current(), 500 + Math.random() * 1000);
+                scheduleNextInterrupt(500 + Math.random() * 1000);
               }
             } else {
               // QUEUE: show as clickable bubble above head
@@ -520,6 +541,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
           }
         });
       }).catch((err) => {
+        llmInFlightRef.current = false;
         console.error("LLM reaction failed, falling back to keywords:", err);
         fallbackKeywordReactions(text, newMC);
       });
@@ -527,7 +549,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
       // === KEYWORD FALLBACK ===
       fallbackKeywordReactions(text, newMC);
     }
-  }, [personas, elapsed, messageCount, personaStates, updateMetrics, llmAvailable, sessionType, transcript, chatMessages, processNextInterrupt]);
+  }, [personas, elapsed, messageCount, personaStates, updateMetrics, llmAvailable, sessionType, transcript, chatMessages, processNextInterrupt, scheduleNextInterrupt]);
 
   // Keep processUserInput ref in sync so callbacks always use the latest version
   processUserInputRef.current = processUserInput;
