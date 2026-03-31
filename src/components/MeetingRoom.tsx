@@ -128,42 +128,70 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     checkLLMAvailability().then(setLlmAvailable);
   }, []);
 
-  // Continuous mode: auto-send committed transcripts to chat
-  // Uses a polling interval to avoid React effect timing issues
-  const lastSentTranscriptRef = useRef("");
+  // Refs for polling access (avoids stale closures in setInterval)
+  const interimRef = useRef("");
+  const speechTranscriptRef = useRef("");
+  interimRef.current = interimTranscript;
+  speechTranscriptRef.current = speechTranscript;
 
+  // Auto-send transcribed text to chat during continuous (Go Live) mode.
+  // Single polling interval handles both committed and interim text:
+  //  - Committed text (from consumeNewText): sent immediately on next poll
+  //  - Interim-only text (ElevenLabs partials): sent after 1.5s of stability
+  //    (covers the case where ElevenLabs sends partials but rarely commits)
   useEffect(() => {
     if (!continuousActive) return;
 
+    let prevSnapshot = "";
+    let stableSince = Date.now();
+    let totalCharsSent = 0;
+
     const interval = setInterval(() => {
       if (sessionEndedRef.current) return;
-      const newText = consumeNewText();
-      if (newText.length > 0) {
-        if (waitingForResponseRef.current) waitingForResponseRef.current = false;
-        processUserInputRef.current(newText);
+
+      // 1. Check for committed text first (highest priority, no delay)
+      const committed = consumeNewText();
+      if (committed.length > 0) {
+        console.log(`[AutoSend] Committed text → chat: "${committed.substring(0, 50)}"`);
+        processUserInputRef.current(committed);
+        // Keep totalCharsSent in sync with committed progress
+        const full = speechTranscriptRef.current.trim();
+        totalCharsSent = full.length;
+        prevSnapshot = (full + (interimRef.current ? " " + interimRef.current : "")).trim();
+        stableSince = Date.now();
+        return;
       }
-    }, 800); // Check every 800ms for new committed text
+
+      // 2. Fallback: check if interim text has been stable (user paused speaking)
+      const interim = interimRef.current;
+      const full = speechTranscriptRef.current;
+      const snapshot = (full + (interim ? " " + interim : "")).trim();
+
+      if (snapshot !== prevSnapshot) {
+        // Text is still changing — user is speaking
+        prevSnapshot = snapshot;
+        stableSince = Date.now();
+        return;
+      }
+
+      // Text has been stable — if 1.5s passed and there's unsent content, send it
+      const stableMs = Date.now() - stableSince;
+      if (snapshot.length > totalCharsSent && stableMs >= 1500) {
+        const newPortion = snapshot.substring(totalCharsSent).trim();
+        if (newPortion.length > 0) {
+          console.log(`[AutoSend] Stable interim → chat (${stableMs}ms): "${newPortion.substring(0, 50)}"`);
+          processUserInputRef.current(newPortion);
+          totalCharsSent = snapshot.length;
+          consumeNewText(); // keep STT hook's internal pointer in sync
+        }
+      }
+    }, 500);
 
     return () => clearInterval(interval);
   }, [continuousActive, consumeNewText]);
 
-  // Secondary: VAD silence detection sends any remaining unconsumed text
-  useEffect(() => {
-    if (!continuousActive) return;
-    onSilenceThreshold(() => {
-      if (sessionEndedRef.current) return;
-      const newText = consumeNewText();
-      if (newText.length > 0) {
-        if (waitingForResponseRef.current) waitingForResponseRef.current = false;
-        processUserInputRef.current(newText);
-      }
-    });
-  }, [continuousActive, onSilenceThreshold, consumeNewText]);
-
   const startContinuousMode = useCallback(async () => {
     setContinuousActive(true);
-    lastSentTranscriptRef.current = "";
-
     // IMPORTANT: Start ElevenLabs STT FIRST — it opens its own mic stream and
     // AudioWorklet pipeline. Opening other mic streams before it can interfere.
     await startListening();
@@ -187,10 +215,13 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
   }, [startListening, startProsody, startVAD, startRecording]);
 
   const stopContinuousMode = useCallback(() => {
-    // Flush any remaining unconsumed text before stopping
-    const remainingText = consumeNewText();
-    if (remainingText.length > 0 && !sessionEndedRef.current) {
-      processUserInputRef.current(remainingText);
+    // Flush any remaining text (committed + interim) before stopping
+    const committed = consumeNewText();
+    const interim = interimRef.current;
+    const remaining = (committed + (interim ? " " + interim : "")).trim();
+    if (remaining.length > 0 && !sessionEndedRef.current) {
+      console.log(`[AutoSend] Flush on stop: "${remaining.substring(0, 50)}"`);
+      processUserInputRef.current(remaining);
     }
 
     setContinuousActive(false);
@@ -538,10 +569,13 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     setIsEnding(true);
     sessionEndedRef.current = true;
 
-    // Flush any remaining unconsumed text before stopping
-    const remainingText = consumeNewText();
-    if (remainingText.length > 0) {
-      processUserInputRef.current(remainingText);
+    // Flush any remaining text (committed + interim) before stopping
+    const committed = consumeNewText();
+    const interim = interimRef.current;
+    const remaining = (committed + (interim ? " " + interim : "")).trim();
+    if (remaining.length > 0) {
+      console.log(`[AutoSend] Flush on end: "${remaining.substring(0, 50)}"`);
+      processUserInputRef.current(remaining);
     }
 
     // Hard stop everything
