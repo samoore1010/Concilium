@@ -376,6 +376,29 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     }
   }, [isSpeaking, speakingPersonaId, behavior.allowInterruptions, scheduleNextInterrupt]);
 
+  // ── Mobile: auto-pause mic during TTS playback ──
+  // On mobile, speaker output bleeds into the mic causing feedback loops and
+  // garbled transcription. Pause STT while a persona is speaking, resume after.
+  const micPausedForTTSRef = useRef(false);
+  useEffect(() => {
+    const isMobile = typeof window !== "undefined" && window.innerWidth < 768;
+    if (!isMobile || !continuousActive) return;
+
+    if (isSpeaking && isListening) {
+      // Persona started speaking — pause mic
+      stopListening();
+      stopProsody();
+      micPausedForTTSRef.current = true;
+      console.log("[Mobile] Mic paused during TTS playback");
+    } else if (!isSpeaking && micPausedForTTSRef.current) {
+      // Persona finished speaking — resume mic
+      micPausedForTTSRef.current = false;
+      startListening().catch(() => {});
+      startProsody();
+      console.log("[Mobile] Mic resumed after TTS playback");
+    }
+  }, [isSpeaking, isListening, continuousActive, stopListening, stopProsody, startListening, startProsody]);
+
   // In manual mode, show interim transcript in input (clears when finalized)
   useEffect(() => {
     if (continuousActive) return;
@@ -628,6 +651,30 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     if (persona) setChatMessages((prev) => [...prev, { from: persona.name, text: q.question, time: elapsed }]);
     setQuestionQueue((prev) => prev.filter((x) => x.id !== q.id));
   };
+
+  // ── Mobile: auto-trigger queued audience questions ──
+  // On mobile, the question queue is hidden behind a bottom sheet. Auto-play the
+  // first queued question when the user isn't speaking and no persona is already
+  // speaking, so questions don't get silently missed.
+  useEffect(() => {
+    const isMobile = typeof window !== "undefined" && window.innerWidth < 768;
+    if (!isMobile || !continuousActive) return;
+    if (isSpeaking || speakingPersonaId || questionQueue.length === 0) return;
+
+    const timer = setTimeout(() => {
+      if (questionQueue.length > 0 && !sessionEndedRef.current) {
+        const q = questionQueue[0];
+        console.log("[Mobile] Auto-triggering queued question");
+        if (ttsEnabled) {
+          handleListenToQuestion(q);
+        } else {
+          handleReadQuestion(q);
+        }
+      }
+    }, 1500);
+    return () => clearTimeout(timer);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSpeaking, speakingPersonaId, questionQueue, continuousActive, ttsEnabled]);
 
   const handleEndSession = async () => {
     // Guard against double-clicks
