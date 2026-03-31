@@ -68,14 +68,6 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
       const nativeRate = ctx.sampleRate;
       console.log(`[EL-STT] Sample rate: ${nativeRate}Hz`);
 
-      // Send initial silent audio chunk immediately to keep connection alive
-      const silentPcm = new Int16Array(1600); // 100ms of silence at 16kHz
-      const silentBytes = new Uint8Array(silentPcm.buffer);
-      let silentBin = "";
-      for (let i = 0; i < silentBytes.length; i++) silentBin += String.fromCharCode(silentBytes[i]);
-      ws.send(JSON.stringify({ message_type: "input_audio_chunk", audio_base_64: btoa(silentBin) }));
-      console.log("[EL-STT] Sent initial keepalive chunk");
-
       const source = ctx.createMediaStreamSource(stream);
 
       // Use AnalyserNode + interval to capture audio (more reliable than ScriptProcessorNode)
@@ -114,9 +106,18 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
         let binary = "";
         for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
 
-        ws.send(JSON.stringify({ message_type: "input_audio_chunk", audio_base_64: btoa(binary) }));
+        const chunkMsg = JSON.stringify({
+          message_type: "input_audio_chunk",
+          audio_base_64: btoa(binary),
+          commit: false,
+          sample_rate: 16000,
+        });
+        ws.send(chunkMsg);
         chunksSentRef.current++;
 
+        if (chunksSentRef.current === 1) {
+          console.log(`[EL-STT] First chunk: ${targetLength} samples, ${bytes.length} bytes`);
+        }
         if (chunksSentRef.current % 50 === 0) {
           console.log(`[EL-STT] Sent ${chunksSentRef.current} chunks`);
         }
@@ -140,10 +141,10 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
           }
         } else if (msgType === "session_started") {
           console.log("[EL-STT] Session active");
-        } else if (msgType === "error") {
-          console.error("[EL-STT] Error:", msg.message || JSON.stringify(msg));
+        } else if (msgType === "error" || msgType === "invalid_request") {
+          console.error("[EL-STT] Error:", JSON.stringify(msg));
         } else {
-          console.log(`[EL-STT] Received: ${msgType}`);
+          console.log(`[EL-STT] Received: ${msgType}`, JSON.stringify(msg).substring(0, 200));
         }
       } catch {}
     };
