@@ -47,10 +47,18 @@ export function useProsody() {
   const lastFrameLogRef = useRef(0);
 
   const SILENCE_THRESHOLD = 10; // Volume below this = silence
+  const ownsStreamRef = useRef(true);
 
-  const startAnalysis = useCallback(async () => {
+  const startAnalysis = useCallback(async (externalStream?: MediaStream) => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      let stream: MediaStream;
+      if (externalStream) {
+        stream = externalStream;
+        ownsStreamRef.current = false;
+      } else {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        ownsStreamRef.current = true;
+      }
       const audioContext = new AudioContext();
       const analyser = audioContext.createAnalyser();
       analyser.fftSize = 2048;
@@ -84,8 +92,10 @@ export function useProsody() {
 
     if (sourceRef.current) {
       sourceRef.current.disconnect();
-      const stream = sourceRef.current.mediaStream;
-      stream.getTracks().forEach((t) => t.stop());
+      if (ownsStreamRef.current) {
+        const stream = sourceRef.current.mediaStream;
+        stream.getTracks().forEach((t) => t.stop());
+      }
     }
     if (audioContextRef.current) {
       audioContextRef.current.close();
@@ -185,7 +195,9 @@ export function useProsody() {
       cancelAnimationFrame(rafRef.current);
       if (sourceRef.current) {
         sourceRef.current.disconnect();
-        sourceRef.current.mediaStream.getTracks().forEach((t) => t.stop());
+        if (ownsStreamRef.current) {
+          sourceRef.current.mediaStream.getTracks().forEach((t) => t.stop());
+        }
       }
       if (audioContextRef.current) audioContextRef.current.close();
     };

@@ -8,7 +8,7 @@ export interface RecordingData {
 
 interface UseAudioRecorderReturn {
   isRecording: boolean;
-  startRecording: () => Promise<void>;
+  startRecording: (externalStream?: MediaStream) => Promise<void>;
   stopRecording: () => Promise<RecordingData>;
   getRecording: () => RecordingData;
 }
@@ -22,11 +22,20 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
   const urlRef = useRef("");
   const mimeTypeRef = useRef("");
 
-  const startRecording = useCallback(async () => {
+  const ownsStreamRef = useRef(true);
+
+  const startRecording = useCallback(async (externalStream?: MediaStream) => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-      });
+      let stream: MediaStream;
+      if (externalStream) {
+        stream = externalStream;
+        ownsStreamRef.current = false;
+      } else {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        });
+        ownsStreamRef.current = true;
+      }
 
       const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
         ? "audio/webm;codecs=opus"
@@ -81,9 +90,11 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
         resolve({ blob, url, duration });
       };
 
-      // Stop the recorder and its stream
+      // Stop the recorder; only stop stream tracks if we own the stream
       recorder.stop();
-      recorder.stream.getTracks().forEach((t) => t.stop());
+      if (ownsStreamRef.current) {
+        recorder.stream.getTracks().forEach((t) => t.stop());
+      }
     });
   }, []);
 
@@ -99,9 +110,11 @@ export function useAudioRecorder(): UseAudioRecorderReturn {
     return () => {
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
         mediaRecorderRef.current.stop();
-        mediaRecorderRef.current.stream.getTracks().forEach((t) => t.stop());
+        if (ownsStreamRef.current) {
+          mediaRecorderRef.current.stream.getTracks().forEach((t) => t.stop());
+        }
       }
-      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+      // Don't revoke URL here — the consumer (FeedbackView) still needs it after unmount
     };
   }, []);
 
