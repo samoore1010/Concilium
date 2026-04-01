@@ -54,8 +54,10 @@ function initSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at);
   `);
 
-  // Seed admin account for testing
-  seedAdminUser(db);
+  // Seed admin account only in development
+  if (process.env.NODE_ENV !== "production") {
+    seedAdminUser(db);
+  }
 }
 
 function seedAdminUser(db: Database.Database): void {
@@ -71,5 +73,5 @@ function seedAdminUser(db: Database.Database): void {
   db.prepare("INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)").run(
     ADMIN_ID, ADMIN_EMAIL, ADMIN_NAME, passwordHash
   );
-  console.log(`[DB] Seeded admin user: ${ADMIN_EMAIL} / ${ADMIN_PASSWORD}`);
+  console.log(`[DB] Seeded dev admin user: ${ADMIN_EMAIL}`);
 }
