@@ -1,8 +1,7 @@
 import { useState, useEffect } from "react";
 import { PERSONA_LIBRARY, Persona } from "../data/personas";
 import { MiiAvatar } from "./MiiAvatar";
-import { getRecentSessions, fetchSessionsFromApi, SessionRecord } from "../data/sessionHistory";
-import { useAuth } from "../contexts/AuthContext";
+import { getRecentSessions, SessionRecord } from "../data/sessionHistory";
 
 interface PersonaSelectorProps {
   onStartSession: (personas: Persona[], sessionType: string) => void;
@@ -17,21 +16,14 @@ const SESSION_TYPES = [
 ];
 
 export function PersonaSelector({ onStartSession, onViewSession }: PersonaSelectorProps) {
-  const { token } = useAuth();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [sessionType, setSessionType] = useState("business-pitch");
   const [recentSessions, setRecentSessions] = useState<SessionRecord[]>([]);
   const [staggerIndex, setStaggerIndex] = useState(-1);
 
   useEffect(() => {
-    fetchSessionsFromApi(token, 3).then((apiSessions) => {
-      if (apiSessions.length > 0) {
-        setRecentSessions(apiSessions);
-      } else {
-        setRecentSessions(getRecentSessions(3));
-      }
-    });
-  }, [token]);
+    setRecentSessions(getRecentSessions(3));
+  }, []);
 
   useEffect(() => {
     const indices = Array.from({ length: PERSONA_LIBRARY.length }, (_, i) => i);
