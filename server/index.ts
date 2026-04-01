@@ -17,7 +17,7 @@ getDb();
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "100kb" }));
 app.use(express.static(path.join(__dirname, "../dist")));
 
 // Auth middleware — parses JWT on all requests (does not block)
@@ -64,6 +64,12 @@ const ELEVENLABS_VOICES: Record<string, string> = {
   "patricia-omalley": "MF3mGyEYCl7XYWbV9V6O", // Elli
   "dev-patel": "TxGEqnHWrfWFTfGW9XjX",       // Josh
 };
+
+// === Input Length Limits ===
+
+const MAX_TEXT_LENGTH = 2000;       // userText, description, TTS text
+const MAX_TRANSCRIPT_LENGTH = 10000; // transcripts for feedback
+const MAX_PERSONA_IDS = 10;         // max personas per batch request
 
 // === Health Check ===
 
@@ -162,6 +168,7 @@ app.get("/api/scribe-token", async (_req, res) => {
 app.post("/api/tts/stream", async (req, res) => {
   const { text, personaId, provider } = req.body;
   if (!text) return res.status(400).json({ error: "text required" });
+  if (text.length > MAX_TEXT_LENGTH) return res.status(400).json({ error: `text exceeds ${MAX_TEXT_LENGTH} characters` });
 
   const apiKey = process.env.ELEVENLABS_API_KEY;
   if (!apiKey && provider === "elevenlabs") return res.status(503).json({ error: "ElevenLabs not configured" });
@@ -229,6 +236,7 @@ app.post("/api/tts/stream", async (req, res) => {
 app.post("/api/tts", async (req, res) => {
   const { text, personaId, speed, provider } = req.body;
   if (!text) return res.status(400).json({ error: "text required" });
+  if (text.length > MAX_TEXT_LENGTH) return res.status(400).json({ error: `text exceeds ${MAX_TEXT_LENGTH} characters` });
 
   const requested = provider || "auto";
 
@@ -322,6 +330,7 @@ app.post("/api/generate-script", async (req, res) => {
 
   const { description, sessionType, durationMinutes } = req.body;
   if (!description) return res.status(400).json({ error: "description required" });
+  if (description.length > MAX_TEXT_LENGTH) return res.status(400).json({ error: `description exceeds ${MAX_TEXT_LENGTH} characters` });
 
   const duration = durationMinutes || 3;
   const wordCount = duration * 130; // ~130 WPM target
@@ -367,6 +376,7 @@ app.post("/api/react", async (req, res) => {
 
   const { personaId, userText, sessionType, messageHistory } = req.body;
   if (!personaId || !userText) return res.status(400).json({ error: "personaId and userText required" });
+  if (userText.length > MAX_TEXT_LENGTH) return res.status(400).json({ error: `userText exceeds ${MAX_TEXT_LENGTH} characters` });
 
   try {
     const persona = getPersonaPrompt(personaId);
@@ -391,6 +401,8 @@ app.post("/api/react-batch", async (req, res) => {
 
   const { personaIds, userText, sessionType, messageHistory } = req.body;
   if (!personaIds?.length || !userText) return res.status(400).json({ error: "personaIds and userText required" });
+  if (userText.length > MAX_TEXT_LENGTH) return res.status(400).json({ error: `userText exceeds ${MAX_TEXT_LENGTH} characters` });
+  if (personaIds.length > MAX_PERSONA_IDS) return res.status(400).json({ error: `too many personaIds (max ${MAX_PERSONA_IDS})` });
 
   try {
     const results = await Promise.allSettled(
@@ -425,6 +437,7 @@ app.post("/api/feedback", async (req, res) => {
 
   const { personaId, transcript, sessionType } = req.body;
   if (!personaId || !transcript) return res.status(400).json({ error: "personaId and transcript required" });
+  if (transcript.length > MAX_TRANSCRIPT_LENGTH) return res.status(400).json({ error: `transcript exceeds ${MAX_TRANSCRIPT_LENGTH} characters` });
 
   try {
     const persona = getPersonaPrompt(personaId);
@@ -455,6 +468,8 @@ app.post("/api/feedback-batch", async (req, res) => {
 
   const { personaIds, transcript, sessionType } = req.body;
   if (!personaIds?.length || !transcript) return res.status(400).json({ error: "personaIds and transcript required" });
+  if (transcript.length > MAX_TRANSCRIPT_LENGTH) return res.status(400).json({ error: `transcript exceeds ${MAX_TRANSCRIPT_LENGTH} characters` });
+  if (personaIds.length > MAX_PERSONA_IDS) return res.status(400).json({ error: `too many personaIds (max ${MAX_PERSONA_IDS})` });
 
   try {
     const feedback: any[] = [];
