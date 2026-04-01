@@ -236,12 +236,42 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
         if (msgType === "transcript_partial" || msgType === "partial_transcript") {
           setInterimTranscript(msg.text || "");
         } else if (msgType === "transcript_committed" || msgType === "committed_transcript") {
-          const text = msg.text || "";
-          if (text.trim()) {
-            finalTranscriptRef.current += text + " ";
-            setTranscript(finalTranscriptRef.current);
-            setInterimTranscript("");
-            console.log(`[EL-STT] ✓ "${text.trim().substring(0, 60)}"`);
+          const text = (msg.text || "").trim();
+          if (text) {
+            // ElevenLabs sometimes re-commits accumulated text spanning previous segments
+            // (e.g. "A B C" after "A" and "B" were already committed separately, possibly with
+            // slight transcription differences like "Stephen" vs "Steven"). We detect this by
+            // searching for a significant suffix of already-committed text within the new message,
+            // then only appending what comes after that suffix.
+            const existing = finalTranscriptRef.current.toLowerCase();
+            const existingWords = existing.trim().split(/\s+/).filter(Boolean);
+            const newLower = text.toLowerCase();
+
+            let trueNewText = text;
+            const maxSuffix = Math.min(existingWords.length, 30);
+            for (let suffixLen = maxSuffix; suffixLen >= 5; suffixLen--) {
+              const suffix = existingWords.slice(-suffixLen).join(" ");
+              const idx = newLower.indexOf(suffix);
+              if (idx !== -1) {
+                const remainder = text.substring(idx + suffix.length).trim();
+                if (!remainder) {
+                  // New message is entirely already-committed content — discard
+                  console.log(`[EL-STT] Skip re-commit (no new content): "${text.substring(0, 60)}"`);
+                  trueNewText = "";
+                } else {
+                  trueNewText = remainder;
+                  console.log(`[EL-STT] Stripped ${suffixLen} duplicate words, keeping: "${remainder.substring(0, 60)}"`);
+                }
+                break;
+              }
+            }
+
+            if (trueNewText) {
+              finalTranscriptRef.current += trueNewText + " ";
+              setTranscript(finalTranscriptRef.current);
+              setInterimTranscript("");
+              console.log(`[EL-STT] ✓ "${trueNewText.substring(0, 60)}"`);
+            }
           }
         } else if (msgType === "session_started") {
           console.log("[EL-STT] Session active");
