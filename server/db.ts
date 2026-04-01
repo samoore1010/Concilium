@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import bcrypt from "bcryptjs";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
@@ -52,4 +53,23 @@ function initSchema(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions(user_id);
     CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at);
   `);
+
+  // Seed admin account for testing
+  seedAdminUser(db);
+}
+
+function seedAdminUser(db: Database.Database): void {
+  const ADMIN_EMAIL = "admin@concilium.dev";
+  const ADMIN_PASSWORD = "admin123";
+  const ADMIN_NAME = "Admin";
+  const ADMIN_ID = "00000000-0000-0000-0000-000000000001";
+
+  const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(ADMIN_EMAIL);
+  if (existing) return;
+
+  const passwordHash = bcrypt.hashSync(ADMIN_PASSWORD, 10);
+  db.prepare("INSERT INTO users (id, email, name, password_hash) VALUES (?, ?, ?, ?)").run(
+    ADMIN_ID, ADMIN_EMAIL, ADMIN_NAME, passwordHash
+  );
+  console.log(`[DB] Seeded admin user: ${ADMIN_EMAIL} / ${ADMIN_PASSWORD}`);
 }
