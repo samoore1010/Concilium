@@ -2,8 +2,7 @@ import { useState, useEffect } from "react";
 import { FeedbackItem } from "../data/feedbackEngine";
 import { PERSONA_LIBRARY } from "../data/personas";
 import { MiiAvatar } from "./MiiAvatar";
-import { getSessionHistory, fetchSessionsFromApi, SessionRecord } from "../data/sessionHistory";
-import { useAuth } from "../contexts/AuthContext";
+import { getSessionHistory, SessionRecord } from "../data/sessionHistory";
 import { SessionPlayback, generateSessionEvents } from "./SessionPlayback";
 import { SessionRecordingData } from "./MeetingRoom";
 
@@ -16,7 +15,6 @@ interface FeedbackViewProps {
 }
 
 export function FeedbackView({ feedback, transcript, recordingData, onNewSession, onViewSession }: FeedbackViewProps) {
-  const { token } = useAuth();
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [tab, setTab] = useState<"feedback" | "recording" | "history">("feedback");
   const [sessionHistory, setSessionHistory] = useState<SessionRecord[]>([]);
@@ -25,16 +23,7 @@ export function FeedbackView({ feedback, transcript, recordingData, onNewSession
     ? Math.round((feedback.reduce((sum, f) => sum + f.overallScore, 0) / feedback.length) * 10) / 10
     : 0;
 
-  useEffect(() => {
-    // Load from API first, fall back to in-memory
-    fetchSessionsFromApi(token).then((apiSessions) => {
-      if (apiSessions.length > 0) {
-        setSessionHistory(apiSessions);
-      } else {
-        setSessionHistory(getSessionHistory());
-      }
-    });
-  }, [token]);
+  useEffect(() => { setSessionHistory(getSessionHistory()); }, []);
 
   // Get the most recent session (the one we just completed) for prosody data
   const latestSession = sessionHistory.length > 0 ? sessionHistory[sessionHistory.length - 1] : null;

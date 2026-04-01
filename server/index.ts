@@ -5,29 +5,14 @@ import { fileURLToPath } from "url";
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { getPersonaPrompt, buildReactionPrompt, buildFeedbackPrompt } from "./personaPrompts.js";
-import { getDb } from "./db.js";
-import { authRouter, authMiddleware } from "./auth.js";
-import { sessionsRouter } from "./sessions.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-// Initialize database on startup
-getDb();
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "../dist")));
-
-// Auth middleware — parses JWT on all requests (does not block)
-app.use(authMiddleware as any);
-
-// Auth routes
-app.use("/api/auth", authRouter);
-
-// Session history routes (protected)
-app.use("/api/sessions", sessionsRouter);
 
 // === Provider Init ===
 
