@@ -13,6 +13,8 @@ import { PersonaSelector } from "./components/PersonaSelector";
 import { ScriptSetup, ScriptConfig } from "./components/ScriptSetup";
 import { MeetingRoom, SessionRecordingData } from "./components/MeetingRoom";
 import { FeedbackView } from "./components/FeedbackView";
+import { AuthForm } from "./components/AuthForm";
+import { useAuth } from "./contexts/AuthContext";
 
 type AppView =
   | "landing"
@@ -25,6 +27,7 @@ type AppView =
   | "joining";
 
 export default function App() {
+  const { user, loading: authLoading, logout } = useAuth();
   const [view, setView] = useState<AppView>("landing");
   const [selectedPersonas, setSelectedPersonas] = useState<Persona[]>([]);
   const [sessionType, setSessionType] = useState("business-pitch");
@@ -97,8 +100,33 @@ export default function App() {
 
   const theme = getTheme(sessionType);
 
+  // Auth loading state
+  if (authLoading) {
+    return (
+      <div className="min-h-[100dvh] bg-[#0f0f23] text-white flex items-center justify-center">
+        <div className="w-8 h-8 rounded-full border-2 border-white/20 border-t-blue-500 animate-spin" />
+      </div>
+    );
+  }
+
+  // Auth gate — show login/signup if not authenticated
+  if (!user) {
+    return <AuthForm />;
+  }
+
   return (
     <>
+      {/* User indicator */}
+      <div className="fixed top-3 right-3 z-50 flex items-center gap-2">
+        <span className="text-xs text-white/40">{user.name}</span>
+        <button
+          onClick={logout}
+          className="text-[10px] text-white/30 hover:text-white/60 transition-colors px-2 py-1 rounded border border-white/10 hover:border-white/20"
+        >
+          Sign out
+        </button>
+      </div>
+
       {/* Achievement toast */}
       <AnimatePresence>
         {achievementToast && (

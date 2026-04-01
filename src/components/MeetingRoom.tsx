@@ -20,7 +20,8 @@ import { useProsody } from "../hooks/useProsody";
 import { useAudioRecorder } from "../hooks/useAudioRecorder";
 import { useVAD } from "../hooks/useVAD";
 import { useTTS } from "../hooks/useTTS";
-import { addSession, SessionRecord } from "../data/sessionHistory";
+import { addSession, saveSessionToApi, SessionRecord } from "../data/sessionHistory";
+import { useAuth } from "../contexts/AuthContext";
 
 export interface SessionRecordingData {
   audioUrl: string;
@@ -46,6 +47,7 @@ interface PersonaState {
 type SideTab = "chat" | "coach" | "questions";
 
 export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession, onBack }: MeetingRoomProps) {
+  const { token } = useAuth();
   const [inputText, setInputText] = useState("");
   const [transcript, setTranscript] = useState<string[]>([]);
   const [personaStates, setPersonaStates] = useState<Record<string, PersonaState>>({});
@@ -755,7 +757,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
       : 0;
     const pps: Record<string, number> = {};
     feedback.forEach((f) => { pps[f.personaId] = f.overallScore; });
-    addSession({
+    const sessionRecord: SessionRecord = {
       id: Date.now().toString(), date: Date.now(), sessionType,
       personaIds: personas.map((p) => p.id), overallScore: avg, perPersonaScores: pps,
       wordCount: ft.split(/\s+/).filter(Boolean).length, duration: elapsed,
@@ -763,7 +765,9 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
       prosodyMetrics: { averageVolume: prosodyMetrics.averageVolume, volumeVariation: prosodyMetrics.volumeVariation, pitchVariation: prosodyMetrics.pitchVariation, energyLevel: prosodyMetrics.energyLevel, silenceRatio: prosodyMetrics.silenceRatio },
       feedback,
       transcript: ft,
-    });
+    };
+    addSession(sessionRecord);
+    saveSessionToApi(sessionRecord, token);
     // Collect recording data (use awaited result, not getRecording)
     const timeline = getTimeline();
     const sessionDuration = recordingResult.duration || elapsed;

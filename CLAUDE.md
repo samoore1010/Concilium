@@ -18,8 +18,10 @@ AI-powered presentation practice platform where users rehearse pitches with inte
 | `OPENAI_API_KEY` | OpenAI TTS fallback |
 | `ELEVENLABS_API_KEY` | Premium TTS + real-time STT (single-use token minting) |
 | `PORT` | Server port (default 3000) |
+| `JWT_SECRET` | JWT signing secret (defaults to dev secret — **set in production**) |
+| `DATABASE_PATH` | SQLite database path (defaults to `data/concilium.db`) |
 
-App degrades gracefully if keys are missing.
+App degrades gracefully if API keys are missing. Auth is always available (SQLite is embedded).
 
 ## Commands
 
@@ -48,6 +50,14 @@ App degrades gracefully if keys are missing.
 - `POST /api/react` / `POST /api/react-batch` — Persona reactions
 - `POST /api/feedback` / `POST /api/feedback-batch` — Session feedback (Claude Sonnet)
 - `GET /api/tts/test-elevenlabs` — ElevenLabs diagnostic
+
+### Auth & Session Endpoints
+- `POST /api/auth/signup` — Create account (email, password, name) → JWT
+- `POST /api/auth/login` — Sign in → JWT
+- `GET /api/auth/me` — Current user from JWT (Bearer token)
+- `POST /api/sessions` — Save practice session (requires auth)
+- `GET /api/sessions` — List user's sessions (requires auth)
+- `GET /api/sessions/:id` — Get full session detail (requires auth)
 
 ### ElevenLabs STT Architecture (IMPORTANT — hard-won knowledge)
 
