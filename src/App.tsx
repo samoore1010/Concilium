@@ -15,6 +15,7 @@ import { MeetingRoom, SessionRecordingData } from "./components/MeetingRoom";
 import { FeedbackView } from "./components/FeedbackView";
 import { AuthForm } from "./components/AuthForm";
 import { useAuth } from "./contexts/AuthContext";
+import { AnalyticsDashboard } from "./components/AnalyticsDashboard";
 
 type AppView =
   | "landing"
@@ -24,7 +25,8 @@ type AppView =
   | "script-setup"
   | "meeting"
   | "feedback"
-  | "joining";
+  | "joining"
+  | "analytics";
 
 export default function App() {
   const { user, loading: authLoading, logout } = useAuth();
@@ -118,6 +120,12 @@ export default function App() {
     <>
       {/* User indicator */}
       <div className="fixed top-3 right-3 z-50 flex items-center gap-2">
+        <button
+          onClick={() => setView("analytics")}
+          className="text-[10px] text-white/30 hover:text-white/60 transition-colors px-2 py-1 rounded border border-white/10 hover:border-white/20"
+        >
+          Analytics
+        </button>
         <span className="text-xs text-white/40">{user.name}</span>
         <button
           onClick={logout}
@@ -195,6 +203,12 @@ export default function App() {
         {view === "setup" && (
           <motion.div key="setup" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.4 }}>
             <PersonaSelector onStartSession={handleStartSession} onViewSession={handleViewSession} />
+          </motion.div>
+        )}
+
+        {view === "analytics" && (
+          <motion.div key="analytics" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={{ duration: 0.4 }}>
+            <AnalyticsDashboard onBack={() => setView("landing")} />
           </motion.div>
         )}
       </AnimatePresence>

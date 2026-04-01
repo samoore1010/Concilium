@@ -84,6 +84,108 @@ sessionsRouter.get("/", (req: AuthRequest, res: Response) => {
   }
 });
 
+// GET /api/sessions/analytics — aggregated analytics for dashboard
+sessionsRouter.get("/analytics", (req: AuthRequest, res: Response) => {
+  const user = req.user!;
+
+  try {
+    const db = getDb();
+
+    // Recent sessions (last 20) for history list
+    const sessions = db.prepare(`
+      SELECT id, session_type, personas, overall_score, word_count, duration_seconds, created_at
+      FROM sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 20
+    `).all(user.id) as any[];
+
+    // Performance trends — scores over time (last 50 sessions, chronological)
+    const trends = db.prepare(`
+      SELECT overall_score, word_count, duration_seconds, created_at
+      FROM sessions WHERE user_id = ? AND overall_score IS NOT NULL
+      ORDER BY created_at ASC LIMIT 50
+    `).all(user.id) as any[];
+
+    // Feedback themes — all feedback JSON from sessions
+    const feedbackRows = db.prepare(`
+      SELECT feedback FROM sessions WHERE user_id = ? AND feedback IS NOT NULL
+      ORDER BY created_at DESC LIMIT 30
+    `).all(user.id) as any[];
+
+    // Aggregate feedback themes from strengths/weaknesses
+    const themeCounts: Record<string, { count: number; type: "strength" | "weakness" }> = {};
+    for (const row of feedbackRows) {
+      try {
+        const feedbackList = JSON.parse(row.feedback);
+        for (const fb of feedbackList) {
+          if (fb.strengths) {
+            for (const s of fb.strengths) {
+              const key = s.toLowerCase().trim();
+              if (key) {
+                themeCounts[key] = themeCounts[key] || { count: 0, type: "strength" };
+                themeCounts[key].count++;
+              }
+            }
+          }
+          if (fb.weaknesses) {
+            for (const w of fb.weaknesses) {
+              const key = w.toLowerCase().trim();
+              if (key) {
+                themeCounts[key] = themeCounts[key] || { count: 0, type: "weakness" };
+                themeCounts[key].count++;
+              }
+            }
+          }
+        }
+      } catch {
+        // skip malformed feedback
+      }
+    }
+
+    // Top themes sorted by frequency
+    const feedbackThemes = Object.entries(themeCounts)
+      .map(([theme, { count, type }]) => ({ theme, count, type }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 15);
+
+    // Summary stats
+    const statsRow = db.prepare(`
+      SELECT
+        COUNT(*) as totalSessions,
+        AVG(overall_score) as avgScore,
+        SUM(duration_seconds) as totalDuration,
+        SUM(word_count) as totalWords
+      FROM sessions WHERE user_id = ?
+    `).get(user.id) as any;
+
+    res.json({
+      sessions: sessions.map((row) => ({
+        id: row.id,
+        sessionType: row.session_type,
+        personas: row.personas ? JSON.parse(row.personas) : [],
+        overallScore: row.overall_score,
+        wordCount: row.word_count,
+        durationSeconds: row.duration_seconds,
+        createdAt: row.created_at,
+      })),
+      trends: trends.map((row) => ({
+        score: row.overall_score,
+        wordCount: row.word_count,
+        durationSeconds: row.duration_seconds,
+        createdAt: row.created_at,
+      })),
+      feedbackThemes,
+      stats: {
+        totalSessions: statsRow?.totalSessions || 0,
+        avgScore: statsRow?.avgScore ? Math.round(statsRow.avgScore * 10) / 10 : 0,
+        totalDuration: statsRow?.totalDuration || 0,
+        totalWords: statsRow?.totalWords || 0,
+      },
+    });
+  } catch (err: any) {
+    console.error("[Sessions] Analytics error:", err.message);
+    res.status(500).json({ error: "Failed to load analytics" });
+  }
+});
+
 // GET /api/sessions/:id — get full session detail
 sessionsRouter.get("/:id", (req: AuthRequest, res: Response) => {
   const user = req.user!;
