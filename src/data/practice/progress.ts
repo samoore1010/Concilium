@@ -38,6 +38,7 @@ export const ACHIEVEMENTS: Achievement[] = [
   { id: "five-stars", title: "Rising Star", description: "Earn 5 total stars", icon: "⭐", condition: (p) => p.totalStars >= 5 },
   { id: "fifteen-stars", title: "Star Collector", description: "Earn 15 total stars", icon: "🌟", condition: (p) => p.totalStars >= 15 },
   { id: "thirty-stars", title: "Constellation", description: "Earn 30 total stars", icon: "✨", condition: (p) => p.totalStars >= 30 },
+  { id: "sixty-stars", title: "Galaxy", description: "Earn 60 total stars", icon: "🌌", condition: (p) => p.totalStars >= 60 },
   { id: "perfect-score", title: "Flawless", description: "Get 3 stars on any exercise", icon: "💎", condition: (p) => Object.values(p.exerciseResults).some((r) => r.stars === 3) },
   { id: "no-fillers", title: "Clean Speaker", description: "Complete an exercise with zero filler words", icon: "🧹", condition: (p) => p.totalExercisesCompleted >= 1 }, // checked separately
   { id: "streak-3", title: "Consistent", description: "Practice 3 days in a row", icon: "🔥", condition: (p) => p.currentStreak >= 3 },
@@ -46,6 +47,12 @@ export const ACHIEVEMENTS: Achievement[] = [
   { id: "level-5", title: "Confident Speaker", description: "Reach level 5", icon: "🎤", condition: (p) => p.level >= 5 },
   { id: "level-10", title: "Master Presenter", description: "Reach level 10", icon: "👑", condition: (p) => p.level >= 10 },
   { id: "xp-1000", title: "Thousand Club", description: "Earn 1,000 total XP", icon: "💪", condition: (p) => p.totalXP >= 1000 },
+  { id: "persuader", title: "Persuader", description: "Complete all Opening Hooks exercises", icon: "🎣", condition: (p) => ["p1e1", "p1e2", "p1e3"].every((id) => p.exerciseResults[id]) },
+  { id: "closer", title: "The Closer", description: "Complete all Closing Strong exercises", icon: "🏁", condition: (p) => ["p3e1", "p3e2", "p3e3"].every((id) => p.exerciseResults[id]) },
+  { id: "all-rounder", title: "All-Rounder", description: "Complete at least one exercise in every unit", icon: "🌍", condition: (p) => {
+    const ids = Object.keys(p.exerciseResults);
+    return ids.some((id) => id.startsWith("f")) && ids.some((id) => id.startsWith("e")) && ids.some((id) => id.startsWith("m")) && ids.some((id) => id.startsWith("p"));
+  }},
 ];
 
 const STORAGE_KEY = "concilium-practice-progress";
