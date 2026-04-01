@@ -55,7 +55,7 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
 
     // --- Step 1: Get microphone access ---
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
     streamRef.current = stream;
 
@@ -69,13 +69,18 @@ export function useElevenLabsSTT(): UseElevenLabsSTTReturn {
     console.log(`[EL-STT] Native rate: ${nativeRate}Hz, ratio: ${downsampleRatio.toFixed(2)}`);
 
     // Encoder: convert Float32 buffer → base64 PCM16 string
+    // Uses averaging downsample (not point-sampling) to avoid aliasing artifacts
     function encodeChunk(floatData: Float32Array): string {
       let samples: Float32Array;
       if (downsampleRatio > 1.01) {
         const newLen = Math.floor(floatData.length / downsampleRatio);
         samples = new Float32Array(newLen);
         for (let i = 0; i < newLen; i++) {
-          samples[i] = floatData[Math.floor(i * downsampleRatio)];
+          const start = Math.floor(i * downsampleRatio);
+          const end = Math.min(Math.floor((i + 1) * downsampleRatio), floatData.length);
+          let sum = 0;
+          for (let j = start; j < end; j++) sum += floatData[j];
+          samples[i] = sum / (end - start);
         }
       } else {
         samples = floatData;
