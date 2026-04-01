@@ -379,6 +379,9 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
   // ── Mobile: auto-pause mic during TTS playback ──
   // On mobile, speaker output bleeds into the mic causing feedback loops and
   // garbled transcription. Pause STT while a persona is speaking, resume after.
+  // IMPORTANT: We stop/restart the FULL ElevenLabs pipeline each time, which
+  // mints a new single-use token per resume. To avoid exhausting tokens or
+  // hitting rate limits, we only do this on mobile where feedback is a real issue.
   const micPausedForTTSRef = useRef(false);
   useEffect(() => {
     const isMobile = typeof window !== "undefined" && window.innerWidth < 768;
@@ -391,10 +394,11 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
       micPausedForTTSRef.current = true;
       console.log("[Mobile] Mic paused during TTS playback");
     } else if (!isSpeaking && micPausedForTTSRef.current) {
-      // Persona finished speaking — resume mic
+      // Persona finished speaking — resume mic with shared stream for prosody
       micPausedForTTSRef.current = false;
       startListening().catch(() => {});
-      startProsody();
+      const stream = sharedStreamRef.current;
+      startProsody(stream || undefined);
       console.log("[Mobile] Mic resumed after TTS playback");
     }
   }, [isSpeaking, isListening, continuousActive, stopListening, stopProsody, startListening, startProsody]);
