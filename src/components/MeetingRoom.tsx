@@ -147,6 +147,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
   //  - Fallback: if only interim text and stable for 1.5s, send that instead
   //  - Dedupe: skip if normalized text matches or substantially overlaps last sent
   const lastPublishedRef = useRef("");       // dedup: last text sent to chat
+  const allPublishedRef = useRef<string[]>([]);  // dedup: all texts sent this session
   const coalesceBufferRef = useRef("");      // accumulates committed chunks
   const lastCommitTimeRef = useRef(0);       // when last committed chunk arrived
   const lastInterimSnapshotRef = useRef(""); // tracks interim changes
@@ -157,17 +158,32 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     const trimmed = text.trim();
     if (!trimmed || sessionEndedRef.current) return;
 
-    // Dedupe: skip if identical OR substantial overlap with last published message
+    // Dedupe: skip if text is already covered by previously published messages
     const normalized = trimmed.toLowerCase().replace(/\s+/g, " ");
     const prev = lastPublishedRef.current;
-    if (prev && (normalized === prev || prev.includes(normalized) || normalized.includes(prev))) {
-      // If the new text is longer (superset of prev), allow it — it's a more complete version
-      if (normalized.length <= prev.length) {
-        console.log(`[AutoSend] Dedup skip (${source}): "${trimmed.substring(0, 40)}"`);
-        return;
-      }
+
+    // Skip exact duplicates of the last message
+    if (prev && normalized === prev) {
+      console.log(`[AutoSend] Dedup skip exact (${source}): "${trimmed.substring(0, 40)}"`);
+      return;
     }
+
+    // Skip if the new text is entirely composed of already-published content.
+    // This catches the case where STT re-commits "A B" after A and B were sent separately.
+    const allPublished = allPublishedRef.current.join(" ").toLowerCase().replace(/\s+/g, " ");
+    if (allPublished && allPublished.includes(normalized)) {
+      console.log(`[AutoSend] Dedup skip subset (${source}): "${trimmed.substring(0, 40)}"`);
+      return;
+    }
+
+    // Skip if new text is a subset of the last message (less complete version)
+    if (prev && prev.includes(normalized)) {
+      console.log(`[AutoSend] Dedup skip shorter (${source}): "${trimmed.substring(0, 40)}"`);
+      return;
+    }
+
     lastPublishedRef.current = normalized;
+    allPublishedRef.current.push(normalized);
 
     console.log(`[AutoSend] ${source} → chat: "${trimmed.substring(0, 60)}"`);
     if (waitingForResponseRef.current) waitingForResponseRef.current = false;
@@ -184,6 +200,7 @@ export function MeetingRoom({ personas, sessionType, scriptConfig, onEndSession,
     interimStableSinceRef.current = Date.now();
     totalCharsSentRef.current = 0;
     lastPublishedRef.current = "";
+    allPublishedRef.current = [];
 
     const interval = setInterval(() => {
       if (sessionEndedRef.current) return;
