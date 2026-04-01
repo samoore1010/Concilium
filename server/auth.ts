@@ -4,7 +4,15 @@ import jwt from "jsonwebtoken";
 import { v4 as uuidv4 } from "uuid";
 import { getDb } from "./db.js";
 
-const JWT_SECRET = process.env.JWT_SECRET || "concilium-dev-secret-change-in-production";
+function getJwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (!secret && process.env.NODE_ENV === "production") {
+    throw new Error("JWT_SECRET environment variable is required in production");
+  }
+  return secret || "concilium-dev-secret-change-in-production";
+}
+
+const JWT_SECRET = getJwtSecret();
 const TOKEN_EXPIRY = "7d";
 
 export interface AuthUser {
