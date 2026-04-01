@@ -6,7 +6,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
 import { getPersonaPrompt, buildReactionPrompt, buildFeedbackPrompt } from "./personaPrompts.js";
 import { getDb } from "./db.js";
-import { authRouter, authMiddleware } from "./auth.js";
+import { authRouter, authMiddleware, requireAuth } from "./auth.js";
 import { sessionsRouter } from "./sessions.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -129,7 +129,7 @@ app.get("/api/tts/test-elevenlabs", async (_req, res) => {
 
 // === ElevenLabs STT Token (official single-use token flow) ===
 
-app.get("/api/scribe-token", async (_req, res) => {
+app.get("/api/scribe-token", requireAuth as any, async (_req, res) => {
   const apiKey = process.env.ELEVENLABS_API_KEY;
   if (!apiKey) return res.status(503).json({ available: false, error: "ElevenLabs not configured" });
 
@@ -159,7 +159,7 @@ app.get("/api/scribe-token", async (_req, res) => {
 
 // === Streaming TTS Endpoint ===
 
-app.post("/api/tts/stream", async (req, res) => {
+app.post("/api/tts/stream", requireAuth as any, async (req, res) => {
   const { text, personaId, provider } = req.body;
   if (!text) return res.status(400).json({ error: "text required" });
 
@@ -226,7 +226,7 @@ app.post("/api/tts/stream", async (req, res) => {
 
 // === TTS Endpoint (multi-provider) ===
 
-app.post("/api/tts", async (req, res) => {
+app.post("/api/tts", requireAuth as any, async (req, res) => {
   const { text, personaId, speed, provider } = req.body;
   if (!text) return res.status(400).json({ error: "text required" });
 
@@ -316,7 +316,7 @@ async function ttsElevenLabs(text: string, personaId: string, res: any) {
 
 // === Script Generation ===
 
-app.post("/api/generate-script", async (req, res) => {
+app.post("/api/generate-script", requireAuth as any, async (req, res) => {
   const client = getClient();
   if (!client) return res.status(503).json({ error: "LLM not configured." });
 
@@ -361,7 +361,7 @@ Return ONLY the script text, no titles or annotations.`,
 
 // === LLM Reaction Endpoints ===
 
-app.post("/api/react", async (req, res) => {
+app.post("/api/react", requireAuth as any, async (req, res) => {
   const client = getClient();
   if (!client) return res.status(503).json({ error: "LLM not configured." });
 
@@ -385,7 +385,7 @@ app.post("/api/react", async (req, res) => {
   }
 });
 
-app.post("/api/react-batch", async (req, res) => {
+app.post("/api/react-batch", requireAuth as any, async (req, res) => {
   const client = getClient();
   if (!client) return res.status(503).json({ error: "LLM not configured." });
 
@@ -419,7 +419,7 @@ app.post("/api/react-batch", async (req, res) => {
 
 // === LLM Feedback Endpoints ===
 
-app.post("/api/feedback", async (req, res) => {
+app.post("/api/feedback", requireAuth as any, async (req, res) => {
   const client = getClient();
   if (!client) return res.status(503).json({ error: "LLM not configured." });
 
@@ -449,7 +449,7 @@ app.post("/api/feedback", async (req, res) => {
   }
 });
 
-app.post("/api/feedback-batch", async (req, res) => {
+app.post("/api/feedback-batch", requireAuth as any, async (req, res) => {
   const client = getClient();
   if (!client) return res.status(503).json({ error: "LLM not configured." });
 
